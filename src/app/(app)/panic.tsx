@@ -61,13 +61,11 @@ export default function PanicScreen() {
       Object.entries(totalsByAsset)
         .filter(([, amount]) => amount > 0)
         .map(([asset, amount]) => {
-          // totalsUsdByAsset is priced CoinGecko-first (→ exchange → static).
-          // Treat the value as estimated only when it fell through to the
-          // static fixed-price table (no CoinGecko/exchange price available).
-          const priced = totalsUsdByAsset[asset];
-          const usd = priced != null ? priced : usdValue(asset, amount);
-          const estimated = priced == null || priced === usdValue(asset, amount);
-          return { asset, amount, usd, estimated };
+          // Prefer the USD value the exchange API reported; fall back to a
+          // local estimate only when no exchange could price the asset.
+          const reported = totalsUsdByAsset[asset];
+          const usd = reported != null ? reported : usdValue(asset, amount);
+          return { asset, amount, usd, estimated: reported == null };
         })
         .sort((a, b) => b.usd - a.usd),
     [totalsByAsset, totalsUsdByAsset]
@@ -86,7 +84,7 @@ export default function PanicScreen() {
   const isDryRun = mode === ExecutionMode.DRY_RUN;
 
   return (
-    <Screen>
+    <Screen edges={['top']}>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
