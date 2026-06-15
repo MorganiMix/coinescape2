@@ -8,6 +8,7 @@ import { BybitAdapter } from './adapters/bybit';
 import { CoinbaseAdapter } from './adapters/coinbase';
 import { DeribitAdapter } from './adapters/deribit';
 import { KrakenAdapter } from './adapters/kraken';
+import { KucoinAdapter } from './adapters/kucoin';
 import { OkxAdapter } from './adapters/okx';
 
 export const ADAPTER_FACTORIES: Record<string, AdapterFactory> = {
@@ -16,11 +17,12 @@ export const ADAPTER_FACTORIES: Record<string, AdapterFactory> = {
   kraken: (c) => new KrakenAdapter(c),
   bybit: (c) => new BybitAdapter(c),
   okx: (c) => new OkxAdapter(c),
+  kucoin: (c) => new KucoinAdapter(c),
   deribit: (c) => new DeribitAdapter(c),
 };
 
 /** Exchanges that require an extra passphrase field at connect time. */
-export const REQUIRES_PASSPHRASE = new Set(['okx']);
+export const REQUIRES_PASSPHRASE = new Set(['okx', 'kucoin']);
 
 /**
  * Exchanges that require a 2FA (TOTP) secret to perform API withdrawals. The
@@ -31,4 +33,30 @@ export const REQUIRES_TOTP = new Set(['deribit']);
 
 export function isLiveSupported(exchangeId: string): boolean {
   return exchangeId in ADAPTER_FACTORIES;
+}
+
+/**
+ * Exchanges whose API exposes a readable withdrawal address-book / whitelist
+ * (so the app can offer a saved-address picker). Exchanges NOT listed here have
+ * no such endpoint — Coinbase, OKX and KuCoin manage the whitelist in their own
+ * web/app UI only — so the app must tell the user to enter the address manually.
+ */
+export const SUPPORTS_ADDRESS_BOOK = new Set(['binance', 'bybit', 'kraken', 'deribit']);
+
+/** True when the app can fetch a saved-address list for this exchange. */
+export function hasAddressBook(exchangeId: string): boolean {
+  return SUPPORTS_ADDRESS_BOOK.has(exchangeId);
+}
+
+/**
+ * Exchanges whose API exposes a per-asset list of withdrawal networks/chains
+ * (so the app can offer a chain picker). Exchanges NOT listed here have no chain
+ * concept — Coinbase, Deribit and Kraken withdraw to a single network per asset
+ * — so the UI hides the network selector for them.
+ */
+export const SUPPORTS_CHAIN_SELECTION = new Set(['binance', 'bybit', 'okx', 'kucoin']);
+
+/** True when the app can fetch + offer a chain list for this exchange. */
+export function hasChainSelection(exchangeId: string): boolean {
+  return SUPPORTS_CHAIN_SELECTION.has(exchangeId);
 }

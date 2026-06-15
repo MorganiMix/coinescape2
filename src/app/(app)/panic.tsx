@@ -61,11 +61,13 @@ export default function PanicScreen() {
       Object.entries(totalsByAsset)
         .filter(([, amount]) => amount > 0)
         .map(([asset, amount]) => {
-          // Prefer the USD value the exchange API reported; fall back to a
-          // local estimate only when no exchange could price the asset.
-          const reported = totalsUsdByAsset[asset];
-          const usd = reported != null ? reported : usdValue(asset, amount);
-          return { asset, amount, usd, estimated: reported == null };
+          // totalsUsdByAsset is priced CoinGecko-first (→ exchange → static).
+          // Treat the value as estimated only when it fell through to the
+          // static fixed-price table (no CoinGecko/exchange price available).
+          const priced = totalsUsdByAsset[asset];
+          const usd = priced != null ? priced : usdValue(asset, amount);
+          const estimated = priced == null || priced === usdValue(asset, amount);
+          return { asset, amount, usd, estimated };
         })
         .sort((a, b) => b.usd - a.usd),
     [totalsByAsset, totalsUsdByAsset]
@@ -84,7 +86,7 @@ export default function PanicScreen() {
   const isDryRun = mode === ExecutionMode.DRY_RUN;
 
   return (
-    <Screen edges={['top']}>
+    <Screen>
       <ScrollView
         contentContainerStyle={styles.content}
         showsVerticalScrollIndicator={false}
@@ -355,7 +357,7 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: 'rgba(255,77,79,0.35)',
   },
-  panicTitle: { fontSize: 26, fontWeight: '900', color: Brand.danger, letterSpacing: 1 },
+  panicTitle: { fontSize: 26, fontWeight: '900', color: Brand.danger, letterSpacing: 1, textAlign: 'center'  },
   panicSub: { fontSize: 13, color: Brand.textSecondary, textAlign: 'center' },
   warnText: { color: Brand.warning, textAlign: 'center' },
   bufferHint: { lineHeight: 16, marginTop: -Spacing.one },

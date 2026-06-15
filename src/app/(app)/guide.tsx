@@ -100,7 +100,7 @@ export default function GuideScreen() {
   const doneCount = Object.values(done).filter(Boolean).length;
 
   return (
-    <Screen edges={['top']}>
+    <Screen>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
           <Logo size={40} />

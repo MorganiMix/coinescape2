@@ -1,5 +1,6 @@
 export * from './auth';
 export * from './credentialVault';
+export * from './preferencesStore';
 export {
   PBKDF2_ITERATIONS,
   decryptString,

@@ -9,6 +9,7 @@ import {
   AdapterWithdrawal,
   AdapterWithdrawalResult,
   BalanceMapDetailed,
+  ChainOption,
   ConnectionTestResult,
   ExchangeAdapter,
   SavedAddress,
@@ -120,6 +121,32 @@ export class BinanceAdapter implements ExchangeAdapter {
         memo: a?.addressTag ? String(a.addressTag) : undefined,
         verified: Boolean(a?.whiteStatus),
       }));
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchChains(asset: string): Promise<ChainOption[]> {
+    try {
+      // GET /sapi/v1/capital/config/getall → [{ coin, networkList: [{ network,
+      // name, isDefault, withdrawEnable, ... }] }]. The `network` value is what
+      // withdraw() passes as its `network` param, so use it verbatim as the id.
+      const res = await fetchWithTimeout(this.signedUrl('/sapi/v1/capital/config/getall'), {
+        method: 'GET',
+        headers: this.headers(),
+      });
+      if (!res.ok) return [];
+      const all: any[] = await res.json().catch(() => []);
+      if (!Array.isArray(all)) return [];
+      const entry = all.find((c) => String(c?.coin).toUpperCase() === asset.toUpperCase());
+      const list: any[] = entry?.networkList ?? [];
+      return list
+        .filter((n) => n?.network)
+        .map((n) => ({
+          id: String(n.network),
+          label: n?.name ? `${String(n.name)} (${String(n.network)})` : String(n.network),
+          isDefault: Boolean(n?.isDefault),
+        }));
     } catch {
       return [];
     }

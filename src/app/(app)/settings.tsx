@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
 import { AssetBadge } from '@/components/AssetBadge';
 import { ExchangeSelector } from '@/components/ExchangeSelector';
 import { NavMenu } from '@/components/NavMenu';
+import { ChainPicker } from '@/components/ChainPicker';
 import { SavedAddressPicker } from '@/components/SavedAddressPicker';
 import { ThemedText } from '@/components/themed-text';
 import { Card } from '@/components/ui/Card';
@@ -11,9 +12,15 @@ import { GradientButton } from '@/components/ui/GradientButton';
 import { Screen } from '@/components/ui/Screen';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { TextField } from '@/components/ui/TextField';
-import { Brand, Spacing } from '@/constants/theme';
+import { Brand, Radius, Spacing } from '@/constants/theme';
 import { ASSET_META, ExchangeId } from '@/domain/types';
-import { REQUIRES_PASSPHRASE, REQUIRES_TOTP, isLiveSupported } from '@/exchange';
+import {
+  REQUIRES_PASSPHRASE,
+  REQUIRES_TOTP,
+  hasAddressBook,
+  hasChainSelection,
+  isLiveSupported,
+} from '@/exchange';
 import { useAppStore } from '@/store/AppStore';
 
 interface CredDraft {
@@ -25,6 +32,19 @@ interface CredDraft {
 const EMPTY_DRAFT: CredDraft = { apiKey: '', apiSecret: '', passphrase: '', totpSecret: '' };
 
 const FALLBACK_ASSETS = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'USDT', 'USDC', 'XRP'];
+
+/** Compact coin amount (more decimals for sub-1 balances). */
+function fmtAmount(amount: number): string {
+  return amount.toLocaleString(undefined, { maximumFractionDigits: amount >= 1 ? 4 : 6 });
+}
+
+function fmtUsd(value: number): string {
+  return value.toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    maximumFractionDigits: value < 100 ? 2 : 0,
+  });
+}
 
 export default function SettingsScreen() {
   const {
@@ -42,12 +62,21 @@ export default function SettingsScreen() {
     savedAddresses,
     isFetchingAddresses,
     fetchWithdrawAddresses,
+    heldAssetsForExchange,
+    liveBalances,
+    priceUsd,
+    refreshBalances,
+    chainOptions,
+    isFetchingChains,
+    fetchChains,
   } = useAppStore();
 
   const [drafts, setDrafts] = useState<Record<string, CredDraft>>({});
   const [connecting, setConnecting] = useState<Record<string, boolean>>({});
   // Which asset's saved-address picker is open (null = closed).
   const [pickerAsset, setPickerAsset] = useState<string | null>(null);
+  // Which asset's chain/network picker is open (null = closed).
+  const [chainPickerAsset, setChainPickerAsset] = useState<string | null>(null);
 
   const draftFor = (id: string): CredDraft => drafts[id] ?? EMPTY_DRAFT;
   const patchDraft = (id: string, patch: Partial<CredDraft>) =>
@@ -98,8 +127,9 @@ export default function SettingsScreen() {
       }
       setDrafts((d) => ({ ...d, [id]: EMPTY_DRAFT }));
       setSelectedExchangeId(id);
-      // Warm the address book for the saved-address picker.
-      fetchWithdrawAddresses(id).catch(() => {});
+      // Warm the address book for the saved-address picker — only for exchanges
+      // that actually expose one (others use manual entry).
+      if (hasAddressBook(id)) fetchWithdrawAddresses(id).catch(() => {});
       if (result.canWithdraw === false) {
         Alert.alert(
           'Connected — but no WITHDRAW permission',
@@ -113,13 +143,64 @@ export default function SettingsScreen() {
 
   // ----- Per-exchange emergency coin selection -----
   const selectedExchange = connectedExchanges.find((ex) => ex.id === selectedExchangeId) ?? null;
-  const exchangeAssets =
-    selectedExchange && selectedExchange.supportedAssets.length > 0
-      ? selectedExchange.supportedAssets
-      : FALLBACK_ASSETS;
+
+  // Refresh live balances when the screen mounts / the connected set changes, so
+  // the held-coin list and USD figures are populated.
+  useEffect(() => {
+    if (connectedExchanges.length > 0) refreshBalances().catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectedExchanges.length]);
+
+  // Coins to offer: the exchange's featured/supported set PLUS every coin with a
+  // non-zero balance on that exchange (so funds in unlisted coins aren't missed).
+  const heldAssets = selectedExchangeId ? heldAssetsForExchange(selectedExchangeId) : [];
+  // Stable string key for the held set so memos don't re-run on array identity.
+  const heldKey = heldAssets.join(',');
+  // Live balance for the selected exchange (amount per asset), for display + USD.
+  const exchangeBalances = selectedExchangeId ? liveBalances[selectedExchangeId] ?? {} : {};
+
+  const exchangeAssets = useMemo(() => {
+    const featured =
+      selectedExchange && selectedExchange.supportedAssets.length > 0
+        ? selectedExchange.supportedAssets
+        : FALLBACK_ASSETS;
+    // Held coins first (these have balances), then the remaining featured coins.
+    const seen = new Set<string>();
+    const ordered: string[] = [];
+    for (const a of [...heldKey.split(',').filter(Boolean), ...featured]) {
+      if (!seen.has(a)) {
+        seen.add(a);
+        ordered.push(a);
+      }
+    }
+    return ordered;
+  }, [selectedExchange, heldKey]);
+
+  // Number of coins held and their total USD value on the selected exchange.
+  const heldSummary = useMemo(() => {
+    const held = heldKey.split(',').filter(Boolean);
+    let usd = 0;
+    let priced = true;
+    for (const asset of held) {
+      const amount = exchangeBalances[asset] ?? 0;
+      if (amount <= 0) continue;
+      const v = priceUsd(asset, amount);
+      if (v == null) priced = false;
+      else usd += v;
+    }
+    return { count: held.length, usd, priced };
+    // exchangeBalances is keyed by selectedExchangeId; heldKey + that id capture it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [heldKey, selectedExchangeId, priceUsd]);
+
   const exchangeAllocations = selectedExchangeId
     ? allocationsForExchange(selectedExchangeId)
     : {};
+  // Whether the selected exchange exposes a readable saved-address book. When
+  // false (Coinbase, OKX, KuCoin) the UI prompts for manual address entry.
+  const exchangeHasAddressBook = selectedExchange ? hasAddressBook(selectedExchange.id) : false;
+  // Whether the selected exchange exposes a per-asset network/chain list.
+  const exchangeHasChainSelection = selectedExchange ? hasChainSelection(selectedExchange.id) : false;
 
   const openPicker = (asset: string) => {
     if (!selectedExchangeId) return;
@@ -128,6 +209,23 @@ export default function SettingsScreen() {
     if (!savedAddresses[selectedExchangeId]) {
       fetchWithdrawAddresses(selectedExchangeId).catch(() => {});
     }
+  };
+
+  const openChainPicker = (asset: string) => {
+    if (!selectedExchangeId) return;
+    setChainPickerAsset(asset);
+    // Lazily fetch the available chains for this (exchange, asset) if not cached.
+    if (!chainOptions[selectedExchangeId]?.[asset]) {
+      fetchChains(selectedExchangeId, asset).catch(() => {});
+    }
+  };
+
+  /** Human label for the currently-selected chain id, or null for default. */
+  const chainLabelFor = (asset: string, networkId?: string): string | null => {
+    if (!networkId) return null;
+    const opts = selectedExchangeId ? chainOptions[selectedExchangeId]?.[asset] : undefined;
+    const match = opts?.find((c) => c.id === networkId);
+    return match?.label ?? networkId;
   };
 
   // Enabled coins on the selected exchange that still lack a destination.
@@ -165,7 +263,7 @@ export default function SettingsScreen() {
   };
 
   return (
-    <Screen edges={['top']}>
+    <Screen>
       <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
         <View style={styles.pageHeader}>
           <ThemedText type="subtitle" style={styles.pageTitle}>
@@ -291,6 +389,20 @@ export default function SettingsScreen() {
           enabledCountFor={enabledCountForExchange}
         />
 
+        {/* Held-balance summary: coins detected + their total USD (CoinGecko). */}
+        {selectedExchange && heldSummary.count > 0 && (
+          <View style={styles.heldSummary}>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
+              {heldSummary.count} {heldSummary.count === 1 ? 'coin' : 'coins'} with a balance on{' '}
+              {selectedExchange.name}
+            </ThemedText>
+            <ThemedText style={styles.heldSummaryUsd}>
+              {heldSummary.priced ? '' : '~'}
+              {fmtUsd(heldSummary.usd)}
+            </ThemedText>
+          </View>
+        )}
+
         {!selectedExchange ? null : (
           <View style={styles.group}>
             {exchangeAssets.map((asset) => {
@@ -299,6 +411,8 @@ export default function SettingsScreen() {
               const address = (cfg?.address ?? '').trim();
               const krakenKey = (cfg?.krakenKey ?? '').trim();
               const hasDest = address.length > 0 || krakenKey.length > 0;
+              const balance = exchangeBalances[asset] ?? 0;
+              const balanceUsd = balance > 0 ? priceUsd(asset, balance) : null;
               return (
                 <Card key={asset} style={[styles.coinCard, enabled && styles.coinCardActive]}>
                   <Pressable
@@ -312,6 +426,18 @@ export default function SettingsScreen() {
                         {ASSET_META[asset]?.name ?? asset}
                       </ThemedText>
                     </View>
+                    {balance > 0 && (
+                      <View style={styles.coinBalance}>
+                        <ThemedText style={styles.coinBalanceAmount} numberOfLines={1}>
+                          {fmtAmount(balance)} {asset}
+                        </ThemedText>
+                        {balanceUsd != null && (
+                          <ThemedText type="small" themeColor="textSecondary">
+                            {fmtUsd(balanceUsd)}
+                          </ThemedText>
+                        )}
+                      </View>
+                    )}
                     <View style={[styles.checkbox, enabled && styles.checkboxOn]}>
                       {enabled && <ThemedText style={styles.checkMark}>✓</ThemedText>}
                     </View>
@@ -319,28 +445,43 @@ export default function SettingsScreen() {
 
                   {enabled && (
                     <View style={styles.destControls}>
-                      {/* Saved-address picker entry point */}
-                      <Pressable
-                        onPress={() => openPicker(asset)}
-                        style={({ pressed }) => [styles.pickerBtn, pressed && styles.pressed]}>
-                        <View style={styles.flex}>
-                          <ThemedText type="small" themeColor="textSecondary" style={styles.pickerLabel}>
-                            Recipient on {selectedExchange.name}
+                      {/* Saved-address picker — only when the exchange exposes a
+                          readable address-book API. Otherwise tell the user to
+                          enter the (already-whitelisted) address manually. */}
+                      {exchangeHasAddressBook ? (
+                        <>
+                          <Pressable
+                            onPress={() => openPicker(asset)}
+                            style={({ pressed }) => [styles.pickerBtn, pressed && styles.pressed]}>
+                            <View style={styles.flex}>
+                              <ThemedText type="small" themeColor="textSecondary" style={styles.pickerLabel}>
+                                Recipient on {selectedExchange.name}
+                              </ThemedText>
+                              <ThemedText style={styles.pickerValue} numberOfLines={1}>
+                                {krakenKey
+                                  ? `Kraken key · ${krakenKey}`
+                                  : address
+                                    ? address
+                                    : 'Choose a saved address →'}
+                              </ThemedText>
+                            </View>
+                            <ThemedText style={styles.pickerChev}>›</ThemedText>
+                          </Pressable>
+
+                          <ThemedText type="small" themeColor="textSecondary" style={styles.orHint}>
+                            …or enter a destination manually:
                           </ThemedText>
-                          <ThemedText style={styles.pickerValue} numberOfLines={1}>
-                            {krakenKey
-                              ? `Kraken key · ${krakenKey}`
-                              : address
-                                ? address
-                                : 'Choose a saved address →'}
+                        </>
+                      ) : (
+                        <View style={styles.manualNotice}>
+                          <ThemedText style={styles.manualNoticeIcon}>✍️</ThemedText>
+                          <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
+                            {selectedExchange.name} doesn&apos;t share its saved-address list over the
+                            API. Enter the recipient address manually below — make sure it&apos;s one
+                            you&apos;ve already whitelisted on {selectedExchange.name}.
                           </ThemedText>
                         </View>
-                        <ThemedText style={styles.pickerChev}>›</ThemedText>
-                      </Pressable>
-
-                      <ThemedText type="small" themeColor="textSecondary" style={styles.orHint}>
-                        …or enter a destination manually:
-                      </ThemedText>
+                      )}
                       <TextField
                         label="Recipient address"
                         placeholder="0x… or bc1…"
@@ -357,6 +498,22 @@ export default function SettingsScreen() {
                         value={cfg?.krakenKey ?? ''}
                         onChangeText={(t) => updateAllocation(selectedExchange.id, asset, { krakenKey: t })}
                       />
+                      {/* Network/chain selector — only for chain-capable exchanges. */}
+                      {exchangeHasChainSelection && (
+                        <Pressable
+                          onPress={() => openChainPicker(asset)}
+                          style={({ pressed }) => [styles.pickerBtn, pressed && styles.pressed]}>
+                          <View style={styles.flex}>
+                            <ThemedText type="small" themeColor="textSecondary" style={styles.pickerLabel}>
+                              Network for {asset}
+                            </ThemedText>
+                            <ThemedText style={styles.pickerValue} numberOfLines={1}>
+                              {chainLabelFor(asset, cfg?.network) ?? 'Exchange default →'}
+                            </ThemedText>
+                          </View>
+                          <ThemedText style={styles.pickerChev}>›</ThemedText>
+                        </Pressable>
+                      )}
                       {!hasDest && (
                         <ThemedText type="small" style={styles.missingHint}>
                           No recipient set — this coin will be skipped during a panic.
@@ -402,6 +559,43 @@ export default function SettingsScreen() {
           onRefresh={() => fetchWithdrawAddresses(selectedExchange.id).catch(() => {})}
         />
       )}
+
+      {/* Network/chain picker sheet */}
+      {selectedExchange && (
+        <ChainPicker
+          visible={chainPickerAsset != null}
+          asset={chainPickerAsset ?? ''}
+          exchangeName={selectedExchange.name}
+          chains={
+            chainPickerAsset
+              ? chainOptions[selectedExchange.id]?.[chainPickerAsset] ?? []
+              : []
+          }
+          selectedId={
+            chainPickerAsset
+              ? exchangeAllocations[chainPickerAsset]?.network
+              : undefined
+          }
+          loading={
+            chainPickerAsset
+              ? !!isFetchingChains[`${selectedExchange.id}:${chainPickerAsset}`]
+              : false
+          }
+          onPick={(id) => {
+            if (chainPickerAsset) {
+              // Empty id clears the override (store undefined, not '') so the
+              // engine/adapters treat it as "no chain" → exchange default.
+              updateAllocation(selectedExchange.id, chainPickerAsset, {
+                network: id || undefined,
+              });
+            }
+          }}
+          onClose={() => setChainPickerAsset(null)}
+          onRefresh={() => {
+            if (chainPickerAsset) fetchChains(selectedExchange.id, chainPickerAsset).catch(() => {});
+          }}
+        />
+      )}
     </Screen>
   );
 }
@@ -437,6 +631,20 @@ const styles = StyleSheet.create({
   coinHead: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
   coinNameWrap: { flex: 1 },
   coinSymbol: { fontSize: 15, fontWeight: '700' },
+  coinBalance: { alignItems: 'flex-end' },
+  coinBalanceAmount: { fontSize: 14, fontWeight: '600' },
+  heldSummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    backgroundColor: Brand.inputBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Brand.cardBorder,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  heldSummaryUsd: { fontSize: 15, fontWeight: '800', color: Brand.accent },
   checkbox: {
     width: 24,
     height: 24,
@@ -471,6 +679,17 @@ const styles = StyleSheet.create({
   pickerChev: { fontSize: 22, color: Brand.textMuted },
   orHint: { marginTop: Spacing.one },
   missingHint: { color: Brand.warning },
+  manualNotice: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+    alignItems: 'flex-start',
+    backgroundColor: Brand.inputBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Brand.cardBorder,
+    padding: Spacing.two,
+  },
+  manualNoticeIcon: { fontSize: 14 },
   sectionHint: { lineHeight: 16, marginTop: 2 },
   addrWarn: { flexDirection: 'row', gap: Spacing.two, marginTop: Spacing.three, alignItems: 'flex-start' },
   warnIcon: { fontSize: 14 },

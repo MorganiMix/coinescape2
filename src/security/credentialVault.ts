@@ -32,6 +32,34 @@ interface StoredCredentials {
 
 const keyFor = (exchangeId: string) => `coinescape.creds.${exchangeId}.v1`;
 
+/**
+ * Index of exchange ids that currently have stored credentials. expo-secure-store
+ * has no "list keys" API, so we maintain this set ourselves to know which
+ * exchanges to restore as connected on the next login. It holds only exchange
+ * ids (no secrets), so it is stored as plain JSON.
+ */
+const INDEX_KEY = 'coinescape.creds.index.v1';
+
+async function readIndex(): Promise<string[]> {
+  return (await getJSON<string[]>(INDEX_KEY)) ?? [];
+}
+
+async function addToIndex(exchangeId: string): Promise<void> {
+  const set = new Set(await readIndex());
+  set.add(exchangeId);
+  await setJSON(INDEX_KEY, [...set]);
+}
+
+async function removeFromIndex(exchangeId: string): Promise<void> {
+  const next = (await readIndex()).filter((id) => id !== exchangeId);
+  await setJSON(INDEX_KEY, next);
+}
+
+/** List the exchange ids that have stored credentials (for login restore). */
+export async function listStoredCredentialExchanges(): Promise<string[]> {
+  return readIndex();
+}
+
 /** Encrypt + persist credentials for an exchange. */
 export async function storeCredentials(
   exchangeId: string,
@@ -49,6 +77,7 @@ export async function storeCredentials(
       : undefined,
   };
   await setJSON(keyFor(exchangeId), record);
+  await addToIndex(exchangeId);
 }
 
 /** Retrieve + decrypt credentials. Returns null if none stored. Throws on bad key. */
@@ -72,4 +101,5 @@ export async function retrieveCredentials(
 
 export async function deleteCredentials(exchangeId: string): Promise<void> {
   await deleteItem(keyFor(exchangeId));
+  await removeFromIndex(exchangeId);
 }

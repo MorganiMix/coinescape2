@@ -9,6 +9,7 @@ import {
   AdapterWithdrawal,
   AdapterWithdrawalResult,
   BalanceMapDetailed,
+  ChainOption,
   ConnectionTestResult,
   ExchangeAdapter,
   SavedAddress,
@@ -96,6 +97,26 @@ export class BybitAdapter implements ExchangeAdapter {
         memo: a?.tag ? String(a.tag) : undefined,
         verified: Number(a?.verified) === 1,
       }));
+    } catch {
+      return [];
+    }
+  }
+
+  async fetchChains(asset: string): Promise<ChainOption[]> {
+    try {
+      // GET /v5/asset/coin/query-info?coin={asset} → result.rows[0].chains:
+      // [{ chain, chainType, ... }]. `chain` is what withdraw() sends, so it is
+      // the id used verbatim.
+      const result = await this.get('/v5/asset/coin/query-info', { coin: asset });
+      const rows: any[] = result?.rows ?? [];
+      const row = rows.find((r) => String(r?.coin).toUpperCase() === asset.toUpperCase()) ?? rows[0];
+      const chains: any[] = row?.chains ?? [];
+      return chains
+        .filter((c) => c?.chain)
+        .map((c) => ({
+          id: String(c.chain),
+          label: c?.chainType ? `${String(c.chainType)} (${String(c.chain)})` : String(c.chain),
+        }));
     } catch {
       return [];
     }

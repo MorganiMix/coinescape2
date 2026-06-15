@@ -29,6 +29,21 @@ export function toBalanceMap(detailed: BalanceMapDetailed): BalanceMap {
   return out;
 }
 
+/** A single withdrawal network/chain available for an asset on an exchange. */
+export interface ChainOption {
+  /**
+   * Value stored in AllocationConfig.network and passed back to withdraw().
+   * MUST be in the exact form the owning adapter's withdraw() expects (e.g.
+   * Binance network name, OKX chain suffix, KuCoin chainId) so the round-trip
+   * is lossless.
+   */
+  id: string;
+  /** Human-readable label for the picker (e.g. "Ethereum (ERC20)"). */
+  label: string;
+  /** True when the exchange marks this as the asset's default network. */
+  isDefault?: boolean;
+}
+
 /** Outcome of validating credentials against the live exchange. */
 export interface ConnectionTestResult {
   ok: boolean;
@@ -93,6 +108,14 @@ export interface ExchangeAdapter {
 
   /** Submit a single withdrawal. Never throws — failures come back in the result. */
   withdraw(req: AdapterWithdrawal): Promise<AdapterWithdrawalResult>;
+
+  /**
+   * Fetch the withdrawal networks/chains available for an asset (e.g. USDT →
+   * ERC20 / TRC20 / BEP20), from the exchange's currency/coin-info API. Optional
+   * — adapters for exchanges with no chain concept (Coinbase, Deribit, Kraken)
+   * omit it. Returns [] on failure. Never throws.
+   */
+  fetchChains?(asset: AssetSymbol): Promise<ChainOption[]>;
 }
 
 /** Re-export so adapter modules can import the saved-address shape from here. */

@@ -12,6 +12,7 @@ import {
   AdapterWithdrawal,
   AdapterWithdrawalResult,
   BalanceMapDetailed,
+  ChainOption,
   ConnectionTestResult,
   ExchangeAdapter,
   SavedAddress,
@@ -97,6 +98,34 @@ export class OkxAdapter implements ExchangeAdapter {
     // OKX has no public endpoint to list the saved address book — it is managed
     // in the web UI only. Users enter the (already-whitelisted) address manually.
     return [];
+  }
+
+  async fetchChains(asset: string): Promise<ChainOption[]> {
+    try {
+      // GET /api/v5/asset/currencies?ccy={asset} → data: [{ ccy, chain, canWd,
+      // ... }] where chain is "{ccy}-{NETWORK}" (e.g. "ETH-ERC20"). withdraw()
+      // rebuilds that as `${asset}-${network}`, so the id is the NETWORK suffix.
+      const data = await this.request(
+        'GET',
+        `/api/v5/asset/currencies?ccy=${encodeURIComponent(asset)}`
+      );
+      const rows: any[] = data?.data ?? [];
+      const out: ChainOption[] = [];
+      const seen = new Set<string>();
+      for (const r of rows) {
+        const full = String(r?.chain ?? '');
+        if (!full) continue;
+        // Strip the leading "{ccy}-" to get the network suffix.
+        const dash = full.indexOf('-');
+        const suffix = dash >= 0 ? full.slice(dash + 1) : full;
+        if (!suffix || seen.has(suffix)) continue;
+        seen.add(suffix);
+        out.push({ id: suffix, label: full });
+      }
+      return out;
+    } catch {
+      return [];
+    }
   }
 
   async withdraw(req: AdapterWithdrawal): Promise<AdapterWithdrawalResult> {

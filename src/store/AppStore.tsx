@@ -15,13 +15,17 @@ import {
   executeWithdrawalPlanLive,
   simulateWithdrawal,
 } from '@/domain/withdrawalEngine';
-import { BalanceMapDetailed, ExchangeManager, isLiveSupported } from '@/exchange';
+import { BalanceMapDetailed, ChainOption, ExchangeManager, isLiveSupported } from '@/exchange';
 import {
   ApiCredentials,
   deleteCredentials,
   hasAccount as hasLocalAccount,
+  listStoredCredentialExchanges,
+  loadAllocations,
   login as localLogin,
   registerAccount as localRegister,
+  retrieveCredentials,
+  saveAllocations,
   storeCredentials,
 } from '@/security';
 import {
@@ -30,6 +34,7 @@ import {
   mockBalances,
   newAllocationConfig,
 } from '@/domain/mockData';
+import { clearPriceCache, fetchPrices } from '@/domain/coingecko';
 import {
   AllocationConfig,
   AllocationTargets,
@@ -41,6 +46,7 @@ import {
   ExecutionMode,
   ExecutionResults,
   SavedAddress,
+  USD_PRICES,
 } from '@/domain/types';
 
 /** 15-minute inactivity auto-logout window (Requirement 9.2), in ms. */
@@ -87,12 +93,22 @@ interface AppState {
   /** Per-asset amount totals across all connected exchanges (from live balances). */
   totalsByAsset: BalanceMap;
   /**
-   * Per-asset USD totals as reported by the exchange APIs. A value is null when
-   * no connected exchange could price that asset.
+   * Per-asset USD totals. Priced CoinGecko-first (CoinGecko spot × amount),
+   * falling back to the exchange-reported USD, then a static estimate. A value
+   * is null only when none of those sources can price the asset.
    */
   totalsUsdByAsset: Record<string, number | null>;
-  /** Sum of all exchange-reported USD values (null entries treated as 0). */
+  /** Sum of all priced USD values (null entries treated as 0). */
   totalPortfolioUsd: number;
+  /**
+   * Price a single (asset, amount) in USD using the CoinGecko-first chain:
+   * CoinGecko spot → exchange-reported per-unit → static USD_PRICES. Returns
+   * null when no source can price the asset. `exchangeUsd` is the exchange's
+   * reported USD value for this exact amount (optional).
+   */
+  priceUsd: (asset: AssetSymbol, amount: number, exchangeUsd?: number | null) => number | null;
+  /** Assets with a non-zero balance on a specific exchange (from live data). */
+  heldAssetsForExchange: (id: ExchangeId) => AssetSymbol[];
 
   // Allocation config — destinations are configured PER EXCHANGE.
   allocations: AllocationTargets;
@@ -120,6 +136,13 @@ interface AppState {
   /** Pull the saved withdrawal-address book for one exchange. Never throws. */
   fetchWithdrawAddresses: (id: ExchangeId) => Promise<SavedAddress[]>;
 
+  // Withdrawal networks/chains fetched per (exchange, asset)
+  chainOptions: Record<ExchangeId, Record<AssetSymbol, ChainOption[]>>;
+  /** In-flight chain fetches, keyed `${exchangeId}:${asset}`. */
+  isFetchingChains: Record<string, boolean>;
+  /** Fetch the available withdrawal chains for an (exchange, asset). Never throws. */
+  fetchChains: (id: ExchangeId, asset: AssetSymbol) => Promise<ChainOption[]>;
+
   // Execution mode
   mode: ExecutionMode;
   setMode: (mode: ExecutionMode) => void;
@@ -143,12 +166,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [selectedExchangeId, setSelectedExchangeId] = useState<ExchangeId | null>(null);
   const [savedAddresses, setSavedAddresses] = useState<Record<ExchangeId, SavedAddress[]>>({});
   const [isFetchingAddresses, setIsFetchingAddresses] = useState<Record<ExchangeId, boolean>>({});
+  const [chainOptions, setChainOptions] = useState<
+    Record<ExchangeId, Record<AssetSymbol, ChainOption[]>>
+  >({});
+  const [isFetchingChains, setIsFetchingChains] = useState<Record<string, boolean>>({});
   const [mode, setMode] = useState<ExecutionMode>(ExecutionMode.DRY_RUN);
   const [isExecuting, setIsExecuting] = useState(false);
   const [lastResults, setLastResults] = useState<ExecutionResults | null>(null);
   // Detailed live balances (amount + exchange-sourced USD) keyed by exchange.
   const [liveDetailed, setLiveDetailed] = useState<Record<ExchangeId, BalanceMapDetailed>>({});
   const [isRefreshingBalances, setIsRefreshingBalances] = useState(false);
+  // CoinGecko USD spot prices by asset symbol, refreshed alongside balances.
+  const [prices, setPrices] = useState<Record<string, number>>({});
 
   // Amount-only projection of the detailed live balances (for the engine/UI).
   const liveBalances = useMemo<Record<ExchangeId, BalanceMap>>(() => {
@@ -168,6 +197,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
    */
   const encryptionKeyRef = useRef<Uint8Array | null>(null);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /**
+   * Guards the persist-on-change effect so we don't overwrite saved allocations
+   * with the in-memory default before the saved copy has been loaded at login.
+   * Set true once hydration (or a deliberate fresh start) has completed.
+   */
+  const hasHydratedAllocations = useRef(false);
 
   // Detect an existing on-device account at startup.
   useEffect(() => {
@@ -201,6 +236,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setUsername(null);
     setIsAuthenticated(false);
     setLiveDetailed({});
+    setPrices({});
+    clearPriceCache();
+    setChainOptions({});
+    setIsFetchingChains({});
+    // Reset in-memory session state so the NEXT login re-hydrates cleanly from
+    // disk. Persisted credentials/allocations are NOT deleted here.
+    setExchanges(initialExchanges);
+    setAllocations(defaultAllocationTargets);
+    hasHydratedAllocations.current = false;
   }, [clearInactivityTimer]);
 
   /**
@@ -221,6 +265,85 @@ export function AppProvider({ children }: { children: ReactNode }) {
     }, SESSION_TIMEOUT_MS);
   }, [isAuthenticated, clearInactivityTimer, signOut]);
 
+  /**
+   * Restore persisted setup after a session key is available: the saved coin
+   * selection and the previously-connected exchanges (re-validated live in the
+   * background). Best-effort — never throws into the login flow.
+   */
+  const restoreSession = useCallback(async (key: Uint8Array) => {
+    // 1. Coin selection (allocations). Load BEFORE flipping the hydration guard
+    //    so the persist-on-change effect can't clobber it with the default.
+    try {
+      const saved = await loadAllocations();
+      if (saved) setAllocations(saved);
+    } catch {
+      // Ignore — fall back to the default selection.
+    } finally {
+      hasHydratedAllocations.current = true;
+    }
+
+    // 2. Connected exchanges. Restore each id that has stored credentials,
+    //    showing the masked key, then re-validate live.
+    let ids: string[] = [];
+    try {
+      ids = await listStoredCredentialExchanges();
+    } catch {
+      ids = [];
+    }
+    if (ids.length === 0) return;
+
+    const masks = await Promise.all(
+      ids.map(async (id) => {
+        try {
+          const creds = await retrieveCredentials(id, key);
+          if (!creds) return null;
+          const masked =
+            creds.apiKey.length > 4
+              ? `••••••${creds.apiKey.slice(-4).toUpperCase()}`
+              : '••••••KEY';
+          return [id, masked] as const;
+        } catch {
+          return null;
+        }
+      })
+    );
+    const maskById = new Map(masks.filter(Boolean) as (readonly [string, string])[]);
+    if (maskById.size === 0) return;
+
+    setExchanges((prev) =>
+      prev.map((ex) =>
+        maskById.has(ex.id)
+          ? {
+              ...ex,
+              isConnected: true,
+              connectionStatus: ConnectionStatus.CONNECTED,
+              apiKeyMasked: maskById.get(ex.id),
+            }
+          : ex
+      )
+    );
+
+    // 3. Background re-validation: confirm each restored key still works.
+    //    Inlined setExchanges (rather than the setStatus callback) to avoid a
+    //    forward reference + keep this callback dependency-free.
+    const markError = (id: string) =>
+      setExchanges((prev) =>
+        prev.map((ex) => (ex.id === id ? { ...ex, connectionStatus: ConnectionStatus.ERROR } : ex))
+      );
+    const manager = new ExchangeManager(key);
+    await Promise.all(
+      [...maskById.keys()].map(async (id) => {
+        if (!isLiveSupported(id)) return;
+        try {
+          const test = await manager.testConnection(id);
+          if (!test.ok) markError(id);
+        } catch {
+          markError(id);
+        }
+      })
+    );
+  }, []);
+
   const beginSession = useCallback(
     (name: string, key: Uint8Array) => {
       encryptionKeyRef.current = key;
@@ -229,8 +352,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setIsAuthenticated(true);
       clearInactivityTimer();
       inactivityTimer.current = setTimeout(() => signOut(), SESSION_TIMEOUT_MS);
+      // Best-effort restore of saved setup; runs after state is set.
+      void restoreSession(key);
     },
-    [clearInactivityTimer, signOut]
+    [clearInactivityTimer, signOut, restoreSession]
   );
 
   const login = useCallback(
@@ -433,10 +558,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [getManager]
   );
 
+  const fetchChains = useCallback(
+    async (id: ExchangeId, asset: AssetSymbol): Promise<ChainOption[]> => {
+      const manager = getManager();
+      if (!manager) return [];
+      const key = `${id}:${asset}`;
+      setIsFetchingChains((p) => ({ ...p, [key]: true }));
+      try {
+        const list = await manager.fetchChains(id, asset);
+        setChainOptions((p) => ({ ...p, [id]: { ...(p[id] ?? {}), [asset]: list } }));
+        return list;
+      } finally {
+        setIsFetchingChains((p) => ({ ...p, [key]: false }));
+      }
+    },
+    [getManager]
+  );
+
   const connectedExchanges = useMemo(
     () => exchanges.filter((ex) => ex.isConnected),
     [exchanges]
   );
+
+  // Persist the emergency coin selection whenever it changes — but only after
+  // the saved copy has been hydrated at login, so we never overwrite stored
+  // data with the in-memory default. Best-effort; storage errors are ignored.
+  useEffect(() => {
+    if (!isAuthenticated || !hasHydratedAllocations.current) return;
+    void saveAllocations(allocations).catch(() => {});
+  }, [allocations, isAuthenticated]);
 
   // Keep the Settings exchange selector pointed at a valid connected exchange:
   // default to the first connected one, and clear/repoint if it disconnects.
@@ -474,17 +624,35 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [displayBalances]);
 
   /**
-   * Per-asset USD totals AS REPORTED BY THE EXCHANGE APIs. Summed from the
-   * detailed live balances. An asset is null only when every connected exchange
-   * holding it failed to price it (callers may fall back to a local estimate).
+   * Price one (asset, amount) in USD, CoinGecko-first:
+   *   1. CoinGecko spot × amount (consistent valuation across exchanges);
+   *   2. the exchange-reported USD value for this amount (if provided);
+   *   3. a static estimate from USD_PRICES.
+   * Returns null when no source can price the asset.
    */
-  const totalsUsdByAsset = useMemo(() => {
+  const priceUsd = useCallback(
+    (asset: AssetSymbol, amount: number, exchangeUsd?: number | null): number | null => {
+      const gecko = prices[asset.toUpperCase()];
+      if (gecko != null && gecko > 0) return gecko * amount;
+      if (exchangeUsd != null) return exchangeUsd;
+      const stat = USD_PRICES[asset];
+      if (stat != null) return stat * amount;
+      return null;
+    },
+    [prices]
+  );
+
+  /**
+   * Total amount AND exchange-reported USD per asset, summed across exchanges.
+   * (Exchange USD is retained as the fallback price source.)
+   */
+  const exchangeUsdByAsset = useMemo(() => {
     const totals: Record<string, number | null> = {};
     for (const detailed of Object.values(liveDetailed)) {
       for (const [asset, d] of Object.entries(detailed)) {
         if (d.amount <= 0) continue;
         if (d.usdValue == null) {
-          if (!(asset in totals)) totals[asset] = null; // unknown unless priced elsewhere
+          if (!(asset in totals)) totals[asset] = null;
         } else {
           totals[asset] = (totals[asset] ?? 0) + d.usdValue;
         }
@@ -493,7 +661,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return totals;
   }, [liveDetailed]);
 
-  /** Sum of all exchange-reported USD values (null entries treated as 0). */
+  /**
+   * Per-asset USD totals, priced CoinGecko-first (see priceUsd), falling back to
+   * the summed exchange-reported USD, then a static estimate. Null only when no
+   * source can price the asset.
+   */
+  const totalsUsdByAsset = useMemo(() => {
+    const totals: Record<string, number | null> = {};
+    for (const [asset, amount] of Object.entries(totalsByAsset)) {
+      totals[asset] = priceUsd(asset, amount, exchangeUsdByAsset[asset] ?? null);
+    }
+    return totals;
+  }, [totalsByAsset, exchangeUsdByAsset, priceUsd]);
+
+  /** Sum of all priced USD values (null entries treated as 0). */
   const totalPortfolioUsd = useMemo(
     () =>
       Object.values(totalsUsdByAsset).reduce<number>(
@@ -501,6 +682,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
         0
       ),
     [totalsUsdByAsset]
+  );
+
+  /** Assets with a non-zero balance on a specific exchange (from live data). */
+  const heldAssetsForExchange = useCallback(
+    (id: ExchangeId): AssetSymbol[] => {
+      const detailed = liveDetailed[id];
+      if (!detailed) return [];
+      return Object.entries(detailed)
+        .filter(([, d]) => d.amount > 0)
+        .map(([asset]) => asset);
+    },
+    [liveDetailed]
   );
 
   /**
@@ -540,6 +733,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
         merged[ex.id] = mockBalances[ex.id];
       }
     }
+
+    // Refresh CoinGecko USD prices for every held symbol so balances are valued
+    // consistently across exchanges. Fire-and-forget into state (cached 3 min);
+    // failures simply leave prices to fall back to exchange/static sources.
+    const heldSymbols = new Set<string>();
+    for (const m of Object.values(merged)) {
+      for (const [asset, amount] of Object.entries(m)) {
+        if (amount > 0) heldSymbols.add(asset);
+      }
+    }
+    if (heldSymbols.size > 0) {
+      void fetchPrices([...heldSymbols])
+        .then((p) => {
+          if (Object.keys(p).length > 0) setPrices((prev) => ({ ...prev, ...p }));
+        })
+        .catch(() => {});
+    }
+
     return merged;
   }, [getManager, connectedExchanges, liveBalances]);
 
@@ -601,6 +812,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     totalsByAsset,
     totalsUsdByAsset,
     totalPortfolioUsd,
+    priceUsd,
+    heldAssetsForExchange,
     allocations,
     selectedExchangeId,
     setSelectedExchangeId,
@@ -612,6 +825,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     savedAddresses,
     isFetchingAddresses,
     fetchWithdrawAddresses,
+    chainOptions,
+    isFetchingChains,
+    fetchChains,
     mode,
     setMode,
     isExecuting,

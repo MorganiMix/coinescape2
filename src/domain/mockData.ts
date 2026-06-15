@@ -14,6 +14,7 @@ export const SUPPORTED_EXCHANGES: { id: ExchangeId; name: string }[] = [
   { id: 'kraken', name: 'Kraken' },
   { id: 'bybit', name: 'Bybit' },
   { id: 'okx', name: 'OKX' },
+  { id: 'kucoin', name: 'KuCoin' },
   { id: 'deribit', name: 'Deribit' },
   { id: 'other', name: 'Other' },
 ];

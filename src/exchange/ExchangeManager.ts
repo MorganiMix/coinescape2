@@ -11,11 +11,12 @@
  * instance, matching the in-memory-only key handling in AppStore.
  */
 import { retrieveCredentials } from '@/security';
-import { BalanceMap, ExchangeId, SavedAddress } from '@/domain/types';
+import { AssetSymbol, BalanceMap, ExchangeId, SavedAddress } from '@/domain/types';
 import {
   AdapterWithdrawal,
   AdapterWithdrawalResult,
   BalanceMapDetailed,
+  ChainOption,
   ConnectionTestResult,
   ExchangeAdapter,
   toBalanceMap,
@@ -94,6 +95,20 @@ export class ExchangeManager {
       const adapter = await this.adapterFor(exchangeId);
       if (!adapter) return [];
       return await adapter.fetchWithdrawAddresses();
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Fetch the withdrawal networks/chains available for an asset on one exchange.
+   * Returns [] when there is no adapter/credentials or the exchange has no chain
+   * API. Never throws.
+   */
+  async fetchChains(exchangeId: ExchangeId, asset: AssetSymbol): Promise<ChainOption[]> {
+    try {
+      const adapter = await this.adapterFor(exchangeId);
+      return (await adapter?.fetchChains?.(asset)) ?? [];
     } catch {
       return [];
     }
