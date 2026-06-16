@@ -1,56 +1,149 @@
-# Welcome to your Expo app 👋
+# Coin Escape 🪙🚀
 
-This is an [Expo](https://expo.dev) project created with [`create-expo-app`](https://www.npmjs.com/package/create-expo-app).
+An emergency "panic withdrawal" app for crypto exchanges. Connect your exchange
+API keys, pre-configure per-coin escape destinations, and drain your funds to
+self-custody in one action when an exchange looks compromised.
 
-## Get started
+Built with [Expo](https://expo.dev) (SDK 56) + Expo Router + React Native.
+Credentials are encrypted on-device (AES-256-GCM) and the session key lives only
+in memory — see `src/security/`.
 
-1. Install dependencies
+> ⚠️ This app can move real funds. Withdrawals are irreversible. Test in
+> **Dry Run** mode before enabling **Real Withdrawal**.
 
-   ```bash
-   npm install
-   ```
+---
 
-2. Start the app
+## Prerequisites
 
-   ```bash
-   npx expo start
-   ```
+- **Node.js** 20+ and npm
+- **EAS CLI** for cloud builds: `npm install -g eas-cli` (then `eas login`)
+- For local native builds: **Xcode** (iOS) and/or **Android Studio + JDK 17** (Android)
 
-In the output, you'll find options to open the app in a
-
-- [development build](https://docs.expo.dev/develop/development-builds/introduction/)
-- [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/)
-- [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/)
-- [Expo Go](https://expo.dev/go), a limited sandbox for trying out app development with Expo
-
-You can start developing by editing the files inside the **app** directory. This project uses [file-based routing](https://docs.expo.dev/router/introduction).
-
-## Get a fresh project
-
-When you're ready, run:
+## Install
 
 ```bash
-npm run reset-project
+npm install
 ```
 
-This command will move the starter code to the **app-example** directory and create a blank **app** directory where you can start developing.
+## Run in development
 
-### Other setup steps
+```bash
+npx expo start          # or: npm start
+```
 
-- To set up ESLint for linting, run `npx expo lint`, or follow our guide on ["Using ESLint and Prettier"](https://docs.expo.dev/guides/using-eslint/)
-- If you'd like to set up unit testing, follow our guide on ["Unit Testing with Jest"](https://docs.expo.dev/develop/unit-testing/)
-- Learn more about the TypeScript setup in this template in our guide on ["Using TypeScript"](https://docs.expo.dev/guides/typescript/)
+Then open the app in:
+
+- a [development build](https://docs.expo.dev/develop/development-builds/introduction/) (recommended — this project uses `expo-dev-client` and native modules like `expo-secure-store`)
+- an [Android emulator](https://docs.expo.dev/workflow/android-studio-emulator/) — `npm run android`
+- an [iOS simulator](https://docs.expo.dev/workflow/ios-simulator/) — `npm run ios`
+- the web target — `npm run web`
+
+> Expo Go is **not** suitable here: the secure-store / dev-client native modules
+> require a development build.
+
+---
+
+## Building the app
+
+Coin Escape builds with [EAS Build](https://docs.expo.dev/build/introduction/).
+Build profiles are defined in [`eas.json`](./eas.json).
+
+One-time setup:
+
+```bash
+npm install -g eas-cli
+eas login
+```
+
+### Android
+
+```bash
+# Installable APK for sideloading / internal testing
+eas build --platform android --profile preview
+
+# Release AAB for the Play Store
+eas build --platform android --profile production
+```
+
+The `preview` profile emits an `.apk` (`buildType: apk`); `production` emits the
+default `.aab` bundle for store submission.
+
+### iOS
+
+```bash
+# Internal distribution build (TestFlight / ad-hoc)
+eas build --platform ios --profile preview4
+
+# App Store production build
+eas build --platform ios --profile production
+```
+
+iOS builds require an Apple Developer account; EAS will prompt to manage signing
+credentials on first run. Bundle identifier: `com.morganimix.coinescape`.
+
+### Both platforms at once
+
+```bash
+eas build --platform all --profile production
+```
+
+### Local (no EAS cloud) builds
+
+If you prefer to compile natively on your own machine:
+
+```bash
+npx expo prebuild                 # generate the native android/ + ios/ projects
+npx expo run:android              # build & install a local Android dev build
+npx expo run:ios                  # build & install a local iOS dev build
+```
+
+### Submitting to the stores
+
+```bash
+eas submit --platform android --profile production
+eas submit --platform ios --profile production
+```
+
+---
+
+## App icons & branding
+
+The app icon is generated from a single vector master,
+[`assets/images/coin-escape-icon.svg`](./assets/images/coin-escape-icon.svg)
+(a platinum coin breaking out of a charcoal exchange bracket with a crimson
+escape arrow). To regenerate all icon PNGs after editing the SVG:
+
+```bash
+npm run generate-icons
+```
+
+This rasterizes `icon.png`, the Android adaptive layers, the splash icon, and
+the favicon (uses `sharp`; falls back to `rsvg-convert` / ImageMagick / Inkscape
+if present). Icon and splash colors are configured in [`app.json`](./app.json).
+
+---
+
+## Project layout
+
+| Path | Purpose |
+|------|---------|
+| `src/app/` | Screens (Expo Router file-based routing) — `sign-in`, `(app)/panic`, `(app)/settings`, `(app)/guide` |
+| `src/store/AppStore.tsx` | App-wide state: auth, exchange connections, balances, withdrawal execution |
+| `src/exchange/` | `ExchangeManager` + per-exchange adapters (Binance, Bybit, Coinbase, Deribit, Kraken, KuCoin, OKX) |
+| `src/security/` | On-device credential vault, crypto, local auth, TOTP |
+| `src/domain/` | Types, withdrawal engine, pricing (CoinGecko) |
+| `src/components/` | UI components and design-system primitives |
+| `src/constants/theme.ts` | Brand palette, gradients, spacing tokens |
+
+## Quality checks
+
+```bash
+npm run lint            # ESLint (expo config)
+npx tsc --noEmit        # TypeScript type check
+```
 
 ## Learn more
 
-To learn more about developing your project with Expo, look at the following resources:
-
-- [Expo documentation](https://docs.expo.dev/): Learn fundamentals, or go into advanced topics with our [guides](https://docs.expo.dev/guides).
-- [Learn Expo tutorial](https://docs.expo.dev/tutorial/introduction/): Follow a step-by-step tutorial where you'll create a project that runs on Android, iOS, and the web.
-
-## Join the community
-
-Join our community of developers creating universal apps.
-
-- [Expo on GitHub](https://github.com/expo/expo): View our open source platform and contribute.
-- [Discord community](https://chat.expo.dev): Chat with Expo users and ask questions.
+- [Expo SDK 56 docs](https://docs.expo.dev/versions/v56.0.0/)
+- [EAS Build](https://docs.expo.dev/build/introduction/)
+- [Expo Router](https://docs.expo.dev/router/introduction/)

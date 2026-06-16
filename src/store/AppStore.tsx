@@ -80,6 +80,15 @@ interface AppState {
     id: ExchangeId,
     creds: ApiCredentials
   ) => Promise<{ ok: boolean; canWithdraw?: boolean; error?: string }>;
+  /**
+   * Re-validate an already-connected exchange's STORED credentials against the
+   * live API — used to recover when the exchange drops the connection (key
+   * marked ERROR) without making the user re-enter their API key/secret.
+   * Resolves with { ok, error } — never throws.
+   */
+  reconnectExchange: (
+    id: ExchangeId
+  ) => Promise<{ ok: boolean; canWithdraw?: boolean; error?: string }>;
   disconnectExchange: (id: ExchangeId) => Promise<void>;
   connectedExchanges: Exchange[];
   /** Live balances fetched from connected exchanges (empty until refreshed). */
@@ -448,6 +457,53 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [getManager, setStatus]
   );
 
+  const reconnectExchange = useCallback(
+    async (id: ExchangeId) => {
+      const manager = getManager();
+      if (!manager) {
+        return { ok: false, error: 'Session locked — sign in again to reconnect exchanges.' };
+      }
+      if (!isLiveSupported(id)) {
+        return { ok: false, error: 'Live connection is not supported for this exchange.' };
+      }
+
+      setStatus(id, ConnectionStatus.CONNECTING);
+      try {
+        // Re-validate the STORED credentials — no re-entry of key/secret needed.
+        const connectable = await manager.isConnectable(id);
+        if (!connectable) {
+          setStatus(id, ConnectionStatus.ERROR);
+          return {
+            ok: false,
+            error: 'No stored credentials for this exchange — connect it again.',
+          };
+        }
+        const test = await manager.testConnection(id);
+        if (!test.ok) {
+          setStatus(id, ConnectionStatus.ERROR);
+          return { ok: false, error: test.errorMessage ?? 'Connection test failed.' };
+        }
+        setExchanges((prev) =>
+          prev.map((ex) =>
+            ex.id === id
+              ? {
+                  ...ex,
+                  isConnected: true,
+                  connectionStatus: ConnectionStatus.CONNECTED,
+                  lastSyncTime: Date.now(),
+                }
+              : ex
+          )
+        );
+        return { ok: true, canWithdraw: test.canWithdraw };
+      } catch (e) {
+        setStatus(id, ConnectionStatus.ERROR);
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    [getManager, setStatus]
+  );
+
   const disconnectExchange = useCallback(async (id: ExchangeId) => {
     await deleteCredentials(id).catch(() => {});
     setLiveDetailed((prev) => {
@@ -804,6 +860,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     exchanges,
     toggleExchange,
     connectExchange,
+    reconnectExchange,
     disconnectExchange,
     connectedExchanges,
     liveBalances,

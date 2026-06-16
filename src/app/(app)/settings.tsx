@@ -13,7 +13,7 @@ import { Screen } from '@/components/ui/Screen';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { TextField } from '@/components/ui/TextField';
 import { Brand, Radius, Spacing } from '@/constants/theme';
-import { ASSET_META, ExchangeId } from '@/domain/types';
+import { ASSET_META, ConnectionStatus, ExchangeId } from '@/domain/types';
 import {
   REQUIRES_PASSPHRASE,
   REQUIRES_TOTP,
@@ -50,6 +50,7 @@ export default function SettingsScreen() {
   const {
     exchanges,
     connectExchange,
+    reconnectExchange,
     disconnectExchange,
     connectedExchanges,
     selectedExchangeId,
@@ -73,6 +74,7 @@ export default function SettingsScreen() {
 
   const [drafts, setDrafts] = useState<Record<string, CredDraft>>({});
   const [connecting, setConnecting] = useState<Record<string, boolean>>({});
+  const [reconnecting, setReconnecting] = useState<Record<string, boolean>>({});
   // Which asset's saved-address picker is open (null = closed).
   const [pickerAsset, setPickerAsset] = useState<string | null>(null);
   // Which asset's chain/network picker is open (null = closed).
@@ -138,6 +140,33 @@ export default function SettingsScreen() {
       }
     } finally {
       setConnecting((c) => ({ ...c, [id]: false }));
+    }
+  };
+
+  const handleReconnect = async (id: string, name: string) => {
+    setReconnecting((c) => ({ ...c, [id]: true }));
+    try {
+      const result = await reconnectExchange(id);
+      if (!result.ok) {
+        Alert.alert(
+          'Reconnect failed',
+          result.error ??
+            `Could not re-establish the connection to ${name}. You may need to disconnect and enter fresh API credentials.`
+        );
+        return;
+      }
+      // Pull fresh balances now that the link is back up.
+      refreshBalances().catch(() => {});
+      if (result.canWithdraw === false) {
+        Alert.alert(
+          'Reconnected — but no WITHDRAW permission',
+          `${name} is reconnected for balances, but this API key cannot withdraw. Emergency withdrawals will fail until you enable the WITHDRAW permission on the key.`
+        );
+      } else {
+        Alert.alert('Reconnected', `${name} is connected again.`);
+      }
+    } finally {
+      setReconnecting((c) => ({ ...c, [id]: false }));
     }
   };
 
@@ -286,21 +315,56 @@ export default function SettingsScreen() {
                 </View>
                 <ThemedText
                   type="small"
-                  style={{ color: ex.isConnected ? Brand.success : Brand.textMuted }}>
-                  {ex.isConnected ? 'Connected' : 'Disconnected'}
+                  style={{
+                    color:
+                      ex.connectionStatus === ConnectionStatus.ERROR
+                        ? Brand.danger
+                        : ex.isConnected
+                          ? Brand.success
+                          : Brand.textMuted,
+                  }}>
+                  {ex.connectionStatus === ConnectionStatus.ERROR
+                    ? 'Disconnected'
+                    : ex.connectionStatus === ConnectionStatus.CONNECTING
+                      ? 'Connecting…'
+                      : ex.isConnected
+                        ? 'Connected'
+                        : 'Disconnected'}
                 </ThemedText>
               </View>
 
               {ex.isConnected ? (
-                <View style={styles.connectedRow}>
-                  <ThemedText type="small" themeColor="textSecondary">
-                    API Key {ex.apiKeyMasked}
-                  </ThemedText>
-                  <Pressable onPress={() => disconnectExchange(ex.id)} hitSlop={6}>
-                    <ThemedText type="small" style={{ color: Brand.danger, fontWeight: '700' }}>
-                      Disconnect
+                <View style={styles.connectedWrap}>
+                  <View style={styles.connectedRow}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      API Key {ex.apiKeyMasked}
                     </ThemedText>
-                  </Pressable>
+                    <Pressable onPress={() => disconnectExchange(ex.id)} hitSlop={6}>
+                      <ThemedText type="small" style={{ color: Brand.danger, fontWeight: '700' }}>
+                        Disconnect
+                      </ThemedText>
+                    </Pressable>
+                  </View>
+                  {/* Recovery: the exchange dropped the link (key marked ERROR).
+                      Reconnect re-validates the stored credentials — no re-entry. */}
+                  {ex.connectionStatus === ConnectionStatus.ERROR && (
+                    <>
+                      <View style={styles.reconnectNotice}>
+                        <ThemedText style={styles.reconnectIcon}>⚠️</ThemedText>
+                        <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
+                          {ex.name} dropped the connection. Reconnect to re-establish it using your
+                          stored API key.
+                        </ThemedText>
+                      </View>
+                      <GradientButton
+                        label={reconnecting[ex.id] ? 'Reconnecting…' : 'Reconnect'}
+                        variant="accent"
+                        disabled={reconnecting[ex.id]}
+                        style={styles.connectBtn}
+                        onPress={() => handleReconnect(ex.id, ex.name)}
+                      />
+                    </>
+                  )}
                 </View>
               ) : isLiveSupported(ex.id) ? (
                 <View style={styles.connectForm}>
@@ -622,7 +686,19 @@ const styles = StyleSheet.create({
   exchangeHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   exchangeLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   exchangeName: { fontSize: 16, fontWeight: '700' },
+  connectedWrap: { gap: Spacing.two },
   connectedRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  reconnectNotice: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+    alignItems: 'flex-start',
+    backgroundColor: Brand.inputBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Brand.danger,
+    padding: Spacing.two,
+  },
+  reconnectIcon: { fontSize: 14 },
   connectForm: { gap: Spacing.two },
   connectBtn: { minHeight: 44 },
   totpHint: { lineHeight: 16 },

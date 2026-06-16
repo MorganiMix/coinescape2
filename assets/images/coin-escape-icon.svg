@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Coin Escape — app icon master (vector source of truth).
+  Platinum coin breaking up-and-out of a charcoal exchange bracket,
+  trailed by a crimson high-alert trajectory arrow pointing to safety.
+  1024x1024 canvas (App Store / Play Store master size).
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#2A3647"/>
+      <stop offset="1" stop-color="#0B1220"/>
+    </linearGradient>
+    <linearGradient id="coin" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/>
+      <stop offset="1" stop-color="#C9D2DE"/>
+    </linearGradient>
+    <linearGradient id="escape" x1="0" y1="1" x2="1" y2="0">
+      <stop offset="0" stop-color="#FF7A3C"/>
+      <stop offset="1" stop-color="#E5142B"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Charcoal / gunmetal exchange frame -->
+  <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#frame)"/>
+
+  <!-- Exchange "cage" bracket, bottom-left corner -->
+  <g fill="#46566B">
+    <rect x="168" y="700" width="300" height="68" rx="34"/>
+    <rect x="168" y="500" width="68" height="268" rx="34"/>
+  </g>
+
+  <!-- Crimson trajectory: motion trail + arrowhead, launching up & right -->
+  <g>
+    <rect x="150" y="560" width="520" height="64" rx="32"
+          fill="url(#escape)" transform="rotate(-45 410 592)"/>
+    <path d="M812 150 L862 360 L652 310 Z" fill="#E5142B"
+          transform="rotate(45 757 255)"/>
+  </g>
+
+  <!-- Escaping platinum coin (upper-right) -->
+  <circle cx="660" cy="360" r="232" fill="url(#coin)"
+          stroke="rgba(255,255,255,0.6)" stroke-width="6"/>
+  <text x="660" y="360" font-family="Arial, Helvetica, sans-serif"
+        font-size="200" font-weight="900" fill="#1A2230"
+        text-anchor="middle" dominant-baseline="central"
+        letter-spacing="4">CE</text>
+</svg>

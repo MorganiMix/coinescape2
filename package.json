@@ -36,11 +36,13 @@
     "@types/react": "~19.2.2",
     "eslint": "^9.0.0",
     "eslint-config-expo": "~56.0.4",
+    "sharp": "^0.35.1",
     "typescript": "~6.0.3"
   },
   "scripts": {
     "start": "expo start",
     "reset-project": "node ./scripts/reset-project.js",
+    "generate-icons": "node ./scripts/generate-icons.js",
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
