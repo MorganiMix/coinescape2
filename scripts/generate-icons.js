@@ -60,13 +60,15 @@ const MONO_SVG = `<?xml version="1.0" encoding="UTF-8"?>
 </svg>`;
 
 /** target file -> { svg, size } */
+// SVG source is read once so every PNG derives from the same vector master.
+const MASTER_SVG = fs.readFileSync(SRC, 'utf8');
 const TARGETS = [
-  { out: 'icon.png', svg: fs.readFileSync(SRC, 'utf8'), size: 1024 },
-  { out: 'android-icon-foreground.png', svg: FG_SVG, size: 432 },
+  { out: 'icon.png', svg: MASTER_SVG, size: 1024 },
+  { out: 'android-icon-foreground.png', svg: MASTER_SVG, size: 432 },
   { out: 'android-icon-background.png', svg: BG_SVG, size: 432 },
   { out: 'android-icon-monochrome.png', svg: MONO_SVG, size: 432 },
-  { out: 'splash-icon.png', svg: FG_SVG, size: 200 },
-  { out: 'favicon.png', svg: fs.readFileSync(SRC, 'utf8'), size: 48 },
+  { out: 'splash-icon.png', svg: MASTER_SVG, size: 200 },
+  { out: 'favicon.png', svg: MASTER_SVG, size: 48 },
 ];
 
 function which(cmd) {

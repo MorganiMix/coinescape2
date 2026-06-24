@@ -1,48 +1,52 @@
-<?xml version="1.0" encoding="UTF-8"?>
-<!--
-  Coin Escape — app icon master (vector source of truth).
-  Platinum coin breaking up-and-out of a charcoal exchange bracket,
-  trailed by a crimson high-alert trajectory arrow pointing to safety.
-  1024x1024 canvas (App Store / Play Store master size).
--->
-<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="frame" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#2A3647"/>
-      <stop offset="1" stop-color="#0B1220"/>
-    </linearGradient>
-    <linearGradient id="coin" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#FFFFFF"/>
-      <stop offset="1" stop-color="#C9D2DE"/>
-    </linearGradient>
-    <linearGradient id="escape" x1="0" y1="1" x2="1" y2="0">
-      <stop offset="0" stop-color="#FF7A3C"/>
-      <stop offset="1" stop-color="#E5142B"/>
-    </linearGradient>
-  </defs>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 600">
+  <!-- Dark background -->
+  <rect width="600" height="600" fill="#0f0f0f"/>
 
-  <!-- Charcoal / gunmetal exchange frame -->
-  <rect x="0" y="0" width="1024" height="1024" rx="232" fill="url(#frame)"/>
+  <!-- Door frame (open doorway) -->
+  <rect x="285" y="110" width="175" height="410" fill="none" stroke="#ffffff" stroke-width="14" stroke-linejoin="miter"/>
 
-  <!-- Exchange "cage" bracket, bottom-left corner -->
-  <g fill="#46566B">
-    <rect x="168" y="700" width="300" height="68" rx="34"/>
-    <rect x="168" y="500" width="68" height="268" rx="34"/>
+  <!-- Door (drawn in perspective, swung open to the right) -->
+  <path d="M395 85 L490 115 L490 545 L395 515 Z" fill="#ffffff"/>
+
+  <!-- ===== Running figure — mirrored horizontally (faces the door) ===== -->
+  <g transform="translate(604,0) scale(-1,1)">
+    <!-- Head -->
+    <circle cx="285" cy="210" r="28" fill="#ffffff"/>
+
+    <!-- Torso (leaning forward) -->
+    <path d="M258 232 Q252 235 252 244 L278 320 Q283 328 291 327 L320 318 Q327 315 325 308 L308 240 Q305 230 295 230 Z" fill="#ffffff"/>
+
+    <!-- Forward arm — extended forward (now empty / swinging) -->
+    <path d="M262 248 Q215 250 160 265 Q150 268 150 278 Q150 288 160 290 Q215 287 268 280 Q278 278 278 270 Z" fill="#ffffff"/>
+
+    <!-- Back arm — extended to hold the Bitcoin on the trailing side -->
+    <path d="M315 252 Q350 265 395 280 Q425 290 440 298 Q450 308 440 315 Q415 318 380 312 Q355 305 335 295 Q320 285 308 278 Z" fill="#ffffff"/>
+
+    <!-- Front leg — HIGH KNEE raised (now on the right side after flip) -->
+    <polyline points="285,320 232,358 268,395" fill="none" stroke="#ffffff" stroke-width="32" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Back leg — extended down-back (now on the left side after flip) -->
+    <polyline points="320,320 395,418" fill="none" stroke="#ffffff" stroke-width="30" stroke-linecap="round" stroke-linejoin="round"/>
+
+    <!-- Shoe nubs -->
+    <circle cx="268" cy="395" r="11" fill="#ffffff"/>
+    <circle cx="395" cy="418" r="11" fill="#ffffff"/>
   </g>
 
-  <!-- Crimson trajectory: motion trail + arrowhead, launching up & right -->
-  <g>
-    <rect x="150" y="560" width="520" height="64" rx="32"
-          fill="url(#escape)" transform="rotate(-45 410 592)"/>
-    <path d="M812 150 L862 360 L652 310 Z" fill="#E5142B"
-          transform="rotate(45 757 255)"/>
+  <!-- ===== Bitcoin — coin circle and strokes (mirrored with the figure) ===== -->
+  <g transform="translate(604,0) scale(-1,1)">
+    <!-- Coin body — centered at inner cx=440 → canvas cx=164 -->
+    <circle cx="440" cy="298" r="46" fill="#0f0f0f" stroke="#ffffff" stroke-width="6"/>
+
+    <!-- Vertical strokes through the B -->
+    <rect x="431" y="257" width="7" height="16" fill="#ffffff"/>
+    <rect x="446" y="257" width="7" height="16" fill="#ffffff"/>
+    <rect x="431" y="323" width="7" height="16" fill="#ffffff"/>
+    <rect x="446" y="323" width="7" height="16" fill="#ffffff"/>
   </g>
 
-  <!-- Escaping platinum coin (upper-right) -->
-  <circle cx="660" cy="360" r="232" fill="url(#coin)"
-          stroke="rgba(255,255,255,0.6)" stroke-width="6"/>
-  <text x="660" y="360" font-family="Arial, Helvetica, sans-serif"
-        font-size="200" font-weight="900" fill="#1A2230"
-        text-anchor="middle" dominant-baseline="central"
-        letter-spacing="4">CE</text>
+  <!-- ===== B glyph — drawn at canvas position directly so it reads correctly ===== -->
+  <g transform="translate(164,298)">
+    <path d="M-27 -30 L-27 30 L7 30 Q27 30 27 15 Q27 2 12 -1 Q23 -3 23 -14 Q23 -30 5 -30 Z M-15 -19 L1 -19 Q11 -19 11 -11 Q11 -4 1 -4 L-15 -4 Z M-15 6 L5 6 Q15 6 15 14 Q15 19 5 19 L-15 19 Z" fill="#ffffff" fill-rule="evenodd"/>
+  </g>
 </svg>
