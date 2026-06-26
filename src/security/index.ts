@@ -1,6 +1,7 @@
 export * from './auth';
 export * from './credentialVault';
 export * from './preferencesStore';
+export { detectFreshInstall, wipeAllSecureStoreEntries } from './freshInstall';
 export {
   PBKDF2_ITERATIONS,
   decryptString,

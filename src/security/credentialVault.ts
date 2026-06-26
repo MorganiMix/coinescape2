@@ -39,6 +39,8 @@ const keyFor = (exchangeId: string) => `coinescape.creds.${exchangeId}.v1`;
  * ids (no secrets), so it is stored as plain JSON.
  */
 const INDEX_KEY = 'coinescape.creds.index.v1';
+/** Exported so the fresh-install reset can clear stale index entries on iOS. */
+export const CREDS_INDEX_KEY = INDEX_KEY;
 
 async function readIndex(): Promise<string[]> {
   return (await getJSON<string[]>(INDEX_KEY)) ?? [];

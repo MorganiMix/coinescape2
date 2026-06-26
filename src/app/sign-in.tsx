@@ -1,6 +1,7 @@
 import { useRouter } from 'expo-router';
 import { useMemo, useState } from 'react';
 import {
+  ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
   ScrollView,
@@ -19,7 +20,7 @@ import { useAppStore } from '@/store/AppStore';
 
 export default function SignInScreen() {
   const router = useRouter();
-  const { hasAccount, login, register } = useAppStore();
+  const { hasAccount, authChecked, login, register } = useAppStore();
 
   // First launch (no local account) → create-account mode; otherwise login.
   const isCreating = !hasAccount;
@@ -36,6 +37,20 @@ export default function SignInScreen() {
     if (isCreating && confirm.length === 0) return false;
     return true;
   }, [busy, username, password, confirm, isCreating]);
+
+  // While the AppStore is detecting a fresh install (iOS) and reading the
+  // keychain, render a quiet loader so the UI doesn't flash between
+  // "create-account" and "login" on first launch. Kept below the hooks so
+  // the rules-of-hooks ordering is preserved across renders.
+  if (!authChecked) {
+    return (
+      <Screen>
+        <View style={styles.loadingWrap}>
+          <ActivityIndicator color={Brand.accent} />
+        </View>
+      </Screen>
+    );
+  }
 
   const handleSubmit = async () => {
     setError(null);
@@ -160,6 +175,7 @@ export default function SignInScreen() {
 
 const styles = StyleSheet.create({
   flex: { flex: 1 },
+  loadingWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   content: {
     flexGrow: 1,
     paddingHorizontal: Spacing.four,

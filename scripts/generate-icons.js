@@ -61,10 +61,22 @@ const MONO_SVG = `<?xml version="1.0" encoding="UTF-8"?>
 
 /** target file -> { svg, size } */
 // SVG source is read once so every PNG derives from the same vector master.
+// Must be declared before PAD_SVG since the template literal below interpolates it.
 const MASTER_SVG = fs.readFileSync(SRC, 'utf8');
+
+// Android-only render: nest the master inside a 540x540 canvas with the 432x432
+// content centered at (54, 54). The rasterizer then downsizes the whole canvas
+// to 432px, so the visible mark occupies 80% of the final PNG (432 * 432/540) —
+// 20% smaller on Android launchers, while iOS / splash / favicon / web stay
+// identical because they rasterize MASTER_SVG directly.
+const PAD_SVG = `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="540" height="540" viewBox="0 0 540 540">
+  <svg width="432" height="432" x="54" y="54" viewBox="0 0 600 600">${MASTER_SVG}</svg>
+</svg>`;
+
 const TARGETS = [
   { out: 'icon.png', svg: MASTER_SVG, size: 1024 },
-  { out: 'android-icon-foreground.png', svg: MASTER_SVG, size: 432 },
+  { out: 'android-icon-foreground.png', svg: PAD_SVG, size: 432 },
   { out: 'android-icon-background.png', svg: BG_SVG, size: 432 },
   { out: 'android-icon-monochrome.png', svg: MONO_SVG, size: 432 },
   { out: 'splash-icon.png', svg: MASTER_SVG, size: 200 },

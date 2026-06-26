@@ -19,6 +19,7 @@ import { BalanceMapDetailed, ChainOption, ExchangeManager, isLiveSupported } fro
 import {
   ApiCredentials,
   deleteCredentials,
+  detectFreshInstall,
   hasAccount as hasLocalAccount,
   listStoredCredentialExchanges,
   loadAllocations,
@@ -27,6 +28,7 @@ import {
   retrieveCredentials,
   saveAllocations,
   storeCredentials,
+  wipeAllSecureStoreEntries,
 } from '@/security';
 import {
   defaultAllocationTargets,
@@ -216,13 +218,30 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Detect an existing on-device account at startup.
   useEffect(() => {
     let cancelled = false;
-    hasLocalAccount()
-      .then((exists) => {
+    (async () => {
+      try {
+        // iOS Keychain can persist entries across app uninstalls, so on a
+        // fresh install the keychain may still report an existing account.
+        // AsyncStorage lives in the app sandbox and IS wiped on iOS uninstall,
+        // so we use it as the source of truth for "have we ever run before?".
+        if (await detectFreshInstall()) {
+          await wipeAllSecureStoreEntries();
+        }
+        const exists = await hasLocalAccount();
         if (!cancelled) setHasAccount(exists);
-      })
-      .finally(() => {
+      } catch {
+        // If the detection itself fails, fall back to the keychain check so
+        // the user can still log in to an existing account.
+        try {
+          const exists = await hasLocalAccount();
+          if (!cancelled) setHasAccount(exists);
+        } catch {
+          if (!cancelled) setHasAccount(false);
+        }
+      } finally {
         if (!cancelled) setAuthChecked(true);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
