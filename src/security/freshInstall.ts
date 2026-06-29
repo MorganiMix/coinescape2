@@ -47,6 +47,7 @@ import { deleteItem } from './secureStore';
 import { deleteAccount } from './auth';
 import { clearAllocations } from './preferencesStore';
 import { CREDS_INDEX_KEY } from './credentialVault';
+import { clearAllProfiles } from './profileStore';
 
 const INSTALL_MARKER_KEY = 'coinescape.install.v1';
 
@@ -79,5 +80,6 @@ export async function wipeAllSecureStoreEntries(): Promise<void> {
     deleteAccount(),
     clearAllocations(),
     deleteItem(CREDS_INDEX_KEY),
+    clearAllProfiles(),
   ]);
 }

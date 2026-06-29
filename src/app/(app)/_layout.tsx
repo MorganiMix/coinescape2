@@ -15,6 +15,7 @@ export default function AppTabsLayout() {
       }}>
       <Tabs.Screen name="panic" />
       <Tabs.Screen name="settings" />
+      <Tabs.Screen name="profiles" />
       <Tabs.Screen name="guide" />
     </Tabs>
   );

@@ -1,3 +1,4 @@
+import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
 import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 
@@ -70,7 +71,11 @@ export default function SettingsScreen() {
     chainOptions,
     isFetchingChains,
     fetchChains,
+    profiles,
+    activeProfileId,
   } = useAppStore();
+  const router = useRouter();
+  const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
 
   const [drafts, setDrafts] = useState<Record<string, CredDraft>>({});
   const [connecting, setConnecting] = useState<Record<string, boolean>>({});
@@ -300,6 +305,20 @@ export default function SettingsScreen() {
           </ThemedText>
           <NavMenu />
         </View>
+
+        {/* Active-profile indicator → Profiles screen */}
+        {activeProfile && (
+          <Pressable
+            onPress={() => router.replace('/(app)/profiles')}
+            style={({ pressed }) => [styles.profileBar, pressed && { opacity: 0.7 }]}>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
+              Active profile: <ThemedText style={styles.profileBarName}>{activeProfile.name}</ThemedText>
+            </ThemedText>
+            <ThemedText type="small" style={{ color: Brand.accent, fontWeight: '700' }}>
+              Manage ›
+            </ThemedText>
+          </Pressable>
+        )}
 
         {/* Exchange API config */}
         <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
@@ -674,6 +693,18 @@ const styles = StyleSheet.create({
     marginBottom: Spacing.two,
   },
   pageTitle: { flex: 1, fontSize: 24, lineHeight: 30 },
+  profileBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    backgroundColor: Brand.inputBg,
+    borderRadius: Radius.md,
+    borderWidth: 1,
+    borderColor: Brand.cardBorder,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  profileBarName: { color: Brand.text, fontWeight: '700' },
   sectionLabel: { letterSpacing: 1, fontWeight: '700', marginTop: Spacing.two },
   sectionHeadRow: {
     flexDirection: 'row',

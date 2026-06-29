@@ -23,7 +23,15 @@ export interface ApiCredentials {
   totpSecret?: string;
 }
 
-interface StoredCredentials {
+/**
+ * At-rest shape of a stored credential record. apiKey is a plaintext identifier;
+ * the secret fields are AES-256-GCM blobs encrypted under the account master key.
+ *
+ * Exported so the profile store can move whole records verbatim between
+ * profiles without decrypting/re-encrypting (every profile shares the same
+ * account master key, so an encrypted record is portable across profiles).
+ */
+export interface StoredCredentials {
   apiKey: string;
   apiSecret: EncryptedData;
   passphrase?: EncryptedData;
@@ -62,13 +70,21 @@ export async function listStoredCredentialExchanges(): Promise<string[]> {
   return readIndex();
 }
 
-/** Encrypt + persist credentials for an exchange. */
-export async function storeCredentials(
-  exchangeId: string,
+/** Overwrite the credential index with an explicit set of exchange ids. */
+export async function replaceCredentialIndex(exchangeIds: string[]): Promise<void> {
+  await setJSON(INDEX_KEY, [...new Set(exchangeIds)]);
+}
+
+/**
+ * Encrypt a set of plaintext credentials into the at-rest record shape under
+ * the given master key (no persistence). Used both by storeCredentials and by
+ * the profile importer to re-key imported credentials onto the account.
+ */
+export function encryptApiCredentials(
   creds: ApiCredentials,
   encryptionKey: Uint8Array
-): Promise<void> {
-  const record: StoredCredentials = {
+): StoredCredentials {
+  return {
     apiKey: creds.apiKey,
     apiSecret: encryptString(creds.apiSecret, encryptionKey),
     passphrase: creds.passphrase
@@ -78,7 +94,15 @@ export async function storeCredentials(
       ? encryptString(creds.totpSecret, encryptionKey)
       : undefined,
   };
-  await setJSON(keyFor(exchangeId), record);
+}
+
+/** Encrypt + persist credentials for an exchange. */
+export async function storeCredentials(
+  exchangeId: string,
+  creds: ApiCredentials,
+  encryptionKey: Uint8Array
+): Promise<void> {
+  await setJSON(keyFor(exchangeId), encryptApiCredentials(creds, encryptionKey));
   await addToIndex(exchangeId);
 }
 
@@ -104,4 +128,30 @@ export async function retrieveCredentials(
 export async function deleteCredentials(exchangeId: string): Promise<void> {
   await deleteItem(keyFor(exchangeId));
   await removeFromIndex(exchangeId);
+}
+
+// ───────────────────────────────────────────────────────────────────────────
+// Raw record access — used by the profile store to snapshot / restore a whole
+// profile's credentials. These move the ALREADY-ENCRYPTED record verbatim; no
+// decryption happens here, so the session key is not required.
+// ───────────────────────────────────────────────────────────────────────────
+
+/** Read the encrypted credential record for an exchange (null if none). */
+export async function readStoredCredentialRecord(
+  exchangeId: string
+): Promise<StoredCredentials | null> {
+  return getJSON<StoredCredentials>(keyFor(exchangeId));
+}
+
+/** Write an encrypted credential record verbatim (does NOT touch the index). */
+export async function writeStoredCredentialRecord(
+  exchangeId: string,
+  record: StoredCredentials
+): Promise<void> {
+  await setJSON(keyFor(exchangeId), record);
+}
+
+/** Delete an exchange's credential record only (does NOT touch the index). */
+export async function deleteStoredCredentialRecord(exchangeId: string): Promise<void> {
+  await deleteItem(keyFor(exchangeId));
 }

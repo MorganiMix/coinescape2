@@ -126,6 +126,19 @@ export async function login(username: string, password: string): Promise<AuthSuc
   };
 }
 
+/**
+ * Verify a password against the stored account WITHOUT establishing a session.
+ * Used to gate sensitive in-session actions (e.g. exporting a profile) where we
+ * require the user to re-enter their password but don't want to re-login.
+ * Constant-time; returns false if no account exists.
+ */
+export async function verifyPassword(password: string): Promise<boolean> {
+  const account = await getJSON<StoredAccount>(ACCOUNT_KEY);
+  if (!account) return false;
+  const candidate = deriveKey(password, hexToBytes(account.pwSalt));
+  return constantTimeEqual(candidate, hexToBytes(account.pwVerifier));
+}
+
 /** Remove the local account entirely (e.g. for a reset flow). */
 export async function deleteAccount(): Promise<void> {
   await deleteItem(ACCOUNT_KEY);

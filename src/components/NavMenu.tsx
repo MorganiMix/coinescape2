@@ -6,11 +6,12 @@ import { ThemedText } from '@/components/themed-text';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { useAppStore } from '@/store/AppStore';
 
-type RouteName = 'panic' | 'settings' | 'guide';
+type RouteName = 'panic' | 'settings' | 'profiles' | 'guide';
 
 const ITEMS: { name: RouteName; label: string; glyph: string }[] = [
   { name: 'panic', label: 'Panic', glyph: '🛑' },
   { name: 'settings', label: 'Settings', glyph: '⚙️' },
+  { name: 'profiles', label: 'Profiles', glyph: '💾' },
   { name: 'guide', label: 'Setup Guide', glyph: '📘' },
 ];
 

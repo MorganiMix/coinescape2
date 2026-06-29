@@ -18,16 +18,30 @@ import {
 import { BalanceMapDetailed, ChainOption, ExchangeManager, isLiveSupported } from '@/exchange';
 import {
   ApiCredentials,
+  buildExport,
+  createProfile as createProfileStore,
   deleteCredentials,
+  deleteProfile as deleteProfileStore,
+  encryptApiCredentials,
   detectFreshInstall,
   hasAccount as hasLocalAccount,
   listStoredCredentialExchanges,
   loadAllocations,
+  loadRegistry,
   login as localLogin,
+  MAX_PROFILES,
+  overwriteProfile,
+  parseImport,
+  ProfileMeta,
+  ProfilePayload,
+  ProfileSnapshot,
   registerAccount as localRegister,
+  renameProfile as renameProfileStore,
   retrieveCredentials,
   saveAllocations,
   storeCredentials,
+  switchProfile as switchProfileStore,
+  verifyPassword,
   wipeAllSecureStoreEntries,
 } from '@/security';
 import {
@@ -121,6 +135,46 @@ interface AppState {
   /** Assets with a non-zero balance on a specific exchange (from live data). */
   heldAssetsForExchange: (id: ExchangeId) => AssetSymbol[];
 
+  // Profiles — up to MAX_PROFILES independent exchange+coin setups.
+  /** All saved profiles (the active one's data lives in the live vault keys). */
+  profiles: ProfileMeta[];
+  /** Id of the currently-active profile. */
+  activeProfileId: string | null;
+  /** Maximum number of profiles allowed. */
+  maxProfiles: number;
+  /** Switch to another saved profile, then rehydrate the session from it. */
+  switchProfile: (id: string) => Promise<void>;
+  /** Rename a profile. */
+  renameProfile: (id: string, name: string) => Promise<void>;
+  /**
+   * Delete a profile. Rejects deleting the last remaining profile. When the
+   * active profile is deleted, another is promoted and loaded. Resolves with
+   * { ok, error }.
+   */
+  deleteProfile: (id: string) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Create a fresh (empty) profile and switch to it. Rejects when already at
+   * the profile cap. Resolves with { ok, error }.
+   */
+  createProfile: (name: string) => Promise<{ ok: boolean; error?: string }>;
+  /**
+   * Export the ACTIVE profile as an encrypted JSON string, gated by the
+   * account password (re-entered). Resolves with { ok, text?, error? }.
+   */
+  exportActiveProfile: (
+    password: string
+  ) => Promise<{ ok: boolean; text?: string; error?: string }>;
+  /**
+   * Import an encrypted profile from pasted text + the username/password it was
+   * exported under. Lands in `overwriteId` if given, else a free slot.
+   * Resolves with { ok, needsSlot? (all slots full), error? }.
+   */
+  importProfileFromText: (
+    text: string,
+    password: string,
+    overwriteId?: string
+  ) => Promise<{ ok: boolean; needsSlot?: boolean; error?: string }>;
+
   // Allocation config — destinations are configured PER EXCHANGE.
   allocations: AllocationTargets;
   /** Which exchange's coin set is currently being edited in Settings. */
@@ -174,6 +228,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [username, setUsername] = useState<string | null>(null);
   const [exchanges, setExchanges] = useState<Exchange[]>(initialExchanges);
   const [allocations, setAllocations] = useState<AllocationTargets>(defaultAllocationTargets);
+  const [profiles, setProfiles] = useState<ProfileMeta[]>([]);
+  const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [selectedExchangeId, setSelectedExchangeId] = useState<ExchangeId | null>(null);
   const [savedAddresses, setSavedAddresses] = useState<Record<ExchangeId, SavedAddress[]>>({});
   const [isFetchingAddresses, setIsFetchingAddresses] = useState<Record<ExchangeId, boolean>>({});
@@ -272,6 +328,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // disk. Persisted credentials/allocations are NOT deleted here.
     setExchanges(initialExchanges);
     setAllocations(defaultAllocationTargets);
+    setProfiles([]);
+    setActiveProfileId(null);
     hasHydratedAllocations.current = false;
   }, [clearInactivityTimer]);
 
@@ -299,6 +357,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
    * background). Best-effort — never throws into the login flow.
    */
   const restoreSession = useCallback(async (key: Uint8Array) => {
+    // 0. Profile registry. Creates a default "Profile 1" on first run and
+    //    adopts any pre-profiles live setup into it. Best-effort.
+    try {
+      const registry = await loadRegistry();
+      setProfiles(registry.profiles);
+      setActiveProfileId(registry.activeId);
+    } catch {
+      setProfiles([]);
+      setActiveProfileId(null);
+    }
+
     // 1. Coin selection (allocations). Load BEFORE flipping the hydration guard
     //    so the persist-on-change effect can't clobber it with the default.
     try {
@@ -543,6 +612,171 @@ export function AppProvider({ children }: { children: ReactNode }) {
       )
     );
   }, []);
+
+  // ───────────────────────────── Profiles ─────────────────────────────────
+
+  /**
+   * Re-pull exchange connection state + allocations from the live vault keys
+   * after they've been swapped underneath us (profile switch/import). Resets the
+   * in-memory exchange list to the seed first so a previously-connected exchange
+   * that ISN'T in the new profile is correctly shown disconnected.
+   */
+  const rehydrateActiveProfile = useCallback(
+    async (key: Uint8Array) => {
+      setExchanges(initialExchanges);
+      setAllocations(defaultAllocationTargets);
+      hasHydratedAllocations.current = false;
+      setLiveDetailed({});
+      setSavedAddresses({});
+      setChainOptions({});
+      await restoreSession(key);
+    },
+    [restoreSession]
+  );
+
+  const switchProfile = useCallback(
+    async (id: string) => {
+      const key = encryptionKeyRef.current;
+      if (!key) return;
+      const registry = await switchProfileStore(id);
+      setProfiles(registry.profiles);
+      setActiveProfileId(registry.activeId);
+      await rehydrateActiveProfile(key);
+    },
+    [rehydrateActiveProfile]
+  );
+
+  const renameProfile = useCallback(async (id: string, name: string) => {
+    const registry = await renameProfileStore(id, name);
+    setProfiles(registry.profiles);
+  }, []);
+
+  const deleteProfile = useCallback(
+    async (id: string): Promise<{ ok: boolean; error?: string }> => {
+      const key = encryptionKeyRef.current;
+      if (!key) return { ok: false, error: 'Session locked — sign in again.' };
+      const wasActive = activeProfileId === id;
+      try {
+        const registry = await deleteProfileStore(id);
+        setProfiles(registry.profiles);
+        setActiveProfileId(registry.activeId);
+        // If the active profile was deleted, a different one is now live —
+        // rehydrate exchanges/allocations from the promoted profile's keys.
+        if (wasActive) await rehydrateActiveProfile(key);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    [activeProfileId, rehydrateActiveProfile]
+  );
+
+  const createProfile = useCallback(
+    async (name: string): Promise<{ ok: boolean; error?: string }> => {
+      const key = encryptionKeyRef.current;
+      if (!key) return { ok: false, error: 'Session locked — sign in again.' };
+      try {
+        const registry = await createProfileStore(name);
+        setProfiles(registry.profiles);
+        setActiveProfileId(registry.activeId);
+        await rehydrateActiveProfile(key);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    [rehydrateActiveProfile]
+  );
+
+  const exportActiveProfile = useCallback(
+    async (password: string): Promise<{ ok: boolean; text?: string; error?: string }> => {
+      const key = encryptionKeyRef.current;
+      if (!key || !username) return { ok: false, error: 'Session locked — sign in again.' };
+      if (!(await verifyPassword(password))) {
+        return { ok: false, error: 'Incorrect password.' };
+      }
+      try {
+        // Decrypt the active profile's credentials with the live session key,
+        // then re-encrypt the whole payload under the username+password file key.
+        const ids = await listStoredCredentialExchanges();
+        const creds: Record<string, ApiCredentials> = {};
+        for (const id of ids) {
+          const c = await retrieveCredentials(id, key);
+          if (c) creds[id] = c;
+        }
+        const savedAlloc = (await loadAllocations()) ?? allocations;
+        const payload: ProfilePayload = { allocations: savedAlloc, creds };
+        const active = profiles.find((p) => p.id === activeProfileId);
+        const text = buildExport(active?.name ?? 'Profile', payload, username, password);
+        return { ok: true, text };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    [username, allocations, profiles, activeProfileId]
+  );
+
+  const importProfileFromText = useCallback(
+    async (
+      text: string,
+      password: string,
+      overwriteId?: string
+    ): Promise<{ ok: boolean; needsSlot?: boolean; error?: string }> => {
+      const key = encryptionKeyRef.current;
+      if (!key || !username) return { ok: false, error: 'Session locked — sign in again.' };
+
+      // 1. Decrypt with the username+password the file was exported under.
+      let imported: { name: string; payload: ProfilePayload };
+      try {
+        imported = parseImport(text.trim(), username, password);
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+
+      // 2. Build a snapshot, re-encrypting the imported plaintext credentials
+      //    under the CURRENT account master key so they're portable like any
+      //    other stored profile.
+      const snapshot: ProfileSnapshot = {
+        allocations: imported.payload.allocations ?? null,
+        credIndex: [],
+        creds: {},
+      };
+      try {
+        for (const [id, c] of Object.entries(imported.payload.creds)) {
+          snapshot.creds[id] = encryptApiCredentials(c, key);
+        }
+        snapshot.credIndex = Object.keys(snapshot.creds);
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+
+      try {
+        const registry = await loadRegistry();
+        if (overwriteId) {
+          const next = await overwriteProfile(overwriteId, imported.name, snapshot);
+          setProfiles(next.profiles);
+          // If we overwrote the active profile, reload it live.
+          if (next.activeId === overwriteId) await rehydrateActiveProfile(key);
+          else {
+            setActiveProfileId(next.activeId);
+          }
+          return { ok: true };
+        }
+        if (registry.profiles.length >= MAX_PROFILES) {
+          return { ok: false, needsSlot: true };
+        }
+        // Free slot available — create a new profile from the snapshot & switch.
+        const next = await createProfileStore(imported.name, snapshot);
+        setProfiles(next.profiles);
+        setActiveProfileId(next.activeId);
+        await rehydrateActiveProfile(key);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    [username, rehydrateActiveProfile]
+  );
 
   const allocationsForExchange = useCallback(
     (id: ExchangeId): Record<AssetSymbol, AllocationConfig> =>
@@ -890,6 +1124,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
     totalPortfolioUsd,
     priceUsd,
     heldAssetsForExchange,
+    profiles,
+    activeProfileId,
+    maxProfiles: MAX_PROFILES,
+    switchProfile,
+    renameProfile,
+    deleteProfile,
+    createProfile,
+    exportActiveProfile,
+    importProfileFromText,
     allocations,
     selectedExchangeId,
     setSelectedExchangeId,
