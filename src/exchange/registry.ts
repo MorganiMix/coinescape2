@@ -6,7 +6,8 @@ import { AdapterFactory } from './adapter';
 import { BinanceAdapter } from './adapters/binance';
 import { BybitAdapter } from './adapters/bybit';
 import { CoinbaseAdapter } from './adapters/coinbase';
-import { DeribitAdapter } from './adapters/deribit';
+// Deribit temporarily disabled (connection/withdrawal not working reliably).
+// import { DeribitAdapter } from './adapters/deribit';
 import { KrakenAdapter } from './adapters/kraken';
 import { KucoinAdapter } from './adapters/kucoin';
 import { OkxAdapter } from './adapters/okx';
@@ -18,7 +19,7 @@ export const ADAPTER_FACTORIES: Record<string, AdapterFactory> = {
   bybit: (c) => new BybitAdapter(c),
   okx: (c) => new OkxAdapter(c),
   kucoin: (c) => new KucoinAdapter(c),
-  deribit: (c) => new DeribitAdapter(c),
+  // deribit: (c) => new DeribitAdapter(c),
 };
 
 /** Exchanges that require an extra passphrase field at connect time. */
@@ -29,7 +30,7 @@ export const REQUIRES_PASSPHRASE = new Set(['okx', 'kucoin']);
  * base32 seed is stored encrypted and used to generate the live `tfa` code at
  * panic time (e.g. Deribit rejects withdrawals without a valid 2FA code).
  */
-export const REQUIRES_TOTP = new Set(['deribit']);
+export const REQUIRES_TOTP = new Set<string>([/* 'deribit' — disabled */]);
 
 export function isLiveSupported(exchangeId: string): boolean {
   return exchangeId in ADAPTER_FACTORIES;
@@ -41,7 +42,7 @@ export function isLiveSupported(exchangeId: string): boolean {
  * no such endpoint — Coinbase, OKX and KuCoin manage the whitelist in their own
  * web/app UI only — so the app must tell the user to enter the address manually.
  */
-export const SUPPORTS_ADDRESS_BOOK = new Set(['binance', 'bybit', 'kraken', 'deribit']);
+export const SUPPORTS_ADDRESS_BOOK = new Set(['binance', 'bybit', 'kraken']);
 
 /** True when the app can fetch a saved-address list for this exchange. */
 export function hasAddressBook(exchangeId: string): boolean {

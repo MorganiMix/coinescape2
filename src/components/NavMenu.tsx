@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { Modal, Pressable, StyleSheet, View } from 'react-native';
 
 import { ThemedText } from '@/components/themed-text';
+import { requestLeave } from '@/components/navGuard';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { useAppStore } from '@/store/AppStore';
 
@@ -30,13 +31,19 @@ export function NavMenu() {
 
   const go = (name: RouteName) => {
     setOpen(false);
-    router.replace(`/(app)/${name}`);
+    const doNav = () => router.replace(`/(app)/${name}`);
+    // Give the active screen (e.g. Settings) a chance to intercept — it may
+    // prompt to save unsaved changes before letting navigation continue.
+    if (!requestLeave(doNav)) doNav();
   };
 
   const handleSignOut = () => {
     setOpen(false);
-    signOut();
-    router.replace('/sign-in');
+    const doSignOut = () => {
+      signOut();
+      router.replace('/sign-in');
+    };
+    if (!requestLeave(doSignOut)) doSignOut();
   };
 
   return (

@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
 
 import { NavMenu } from '@/components/NavMenu';
 import { ThemedText } from '@/components/themed-text';
@@ -28,6 +28,12 @@ export default function ProfilesScreen() {
   const [renamingId, setRenamingId] = useState<string | null>(null);
   const [renameText, setRenameText] = useState('');
   const [busyId, setBusyId] = useState<string | null>(null);
+
+  // Create (uses an in-app modal — Alert.prompt is iOS-only, so it silently
+  // failed on Android)
+  const [createOpen, setCreateOpen] = useState(false);
+  const [createName, setCreateName] = useState('');
+  const [creating, setCreating] = useState(false);
 
   // Export
   const [exportPassword, setExportPassword] = useState('');
@@ -110,23 +116,28 @@ export default function ProfilesScreen() {
     }
   };
 
-  const handleCreate = async () => {
+  const handleCreate = () => {
     if (slotsFull) {
       Alert.alert('Profiles full', `You can keep at most ${maxProfiles} profiles.`);
       return;
     }
-    Alert.prompt?.(
-      'New profile',
-      'Name your new (empty) profile. The current one is saved and you’ll switch to the new one.',
-      async (name) => {
-        const result = await createProfile((name ?? '').trim() || `Profile ${profiles.length + 1}`);
-        if (!result.ok) Alert.alert('Could not create profile', result.error ?? 'Unknown error');
+    setCreateName(`Profile ${profiles.length + 1}`);
+    setCreateOpen(true);
+  };
+
+  const commitCreate = async () => {
+    const name = createName.trim() || `Profile ${profiles.length + 1}`;
+    setCreating(true);
+    try {
+      const result = await createProfile(name);
+      if (!result.ok) {
+        Alert.alert('Could not create profile', result.error ?? 'Unknown error');
+        return;
       }
-    );
-    // Android has no Alert.prompt — fall back to a default-named profile.
-    if (!Alert.prompt) {
-      const result = await createProfile(`Profile ${profiles.length + 1}`);
-      if (!result.ok) Alert.alert('Could not create profile', result.error ?? 'Unknown error');
+      setCreateOpen(false);
+      setCreateName('');
+    } finally {
+      setCreating(false);
     }
   };
 
@@ -195,7 +206,12 @@ export default function ProfilesScreen() {
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets>
         <View style={styles.pageHeader}>
           <ThemedText type="subtitle" style={styles.pageTitle}>
             Profiles
@@ -380,6 +396,48 @@ export default function ProfilesScreen() {
           />
         </Card>
       </ScrollView>
+
+      {/* New-profile modal (cross-platform name input) */}
+      <Modal
+        visible={createOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setCreateOpen(false)}>
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          {/* Tap outside the card to dismiss. */}
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setCreateOpen(false)} />
+          <View style={styles.modalCard}>
+            <ThemedText style={styles.modalTitle}>New profile</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
+              Name your new (empty) profile. The current one is saved and you’ll switch to the new
+              one.
+            </ThemedText>
+            <TextField
+              autoFocus
+              value={createName}
+              onChangeText={setCreateName}
+              placeholder="Profile name"
+              maxLength={40}
+              onSubmitEditing={commitCreate}
+              returnKeyType="done"
+            />
+            <View style={styles.modalActions}>
+              <Pressable onPress={() => setCreateOpen(false)} hitSlop={6} disabled={creating}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Cancel
+                </ThemedText>
+              </Pressable>
+              <Pressable onPress={commitCreate} hitSlop={6} disabled={creating}>
+                <ThemedText style={{ color: Brand.accent, fontWeight: '700' }}>
+                  {creating ? 'Creating…' : 'Create'}
+                </ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
     </Screen>
   );
 }
@@ -423,5 +481,26 @@ const styles = StyleSheet.create({
     fontFamily: 'Courier',
     padding: Spacing.three,
     textAlignVertical: 'top',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'center',
+    padding: Spacing.four,
+  },
+  modalCard: {
+    backgroundColor: Brand.cardElevated,
+    borderRadius: Radius.lg,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: Brand.cardBorder,
+    padding: Spacing.four,
+    gap: Spacing.two,
+  },
+  modalTitle: { fontSize: 18, fontWeight: '800' },
+  modalActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: Spacing.four,
+    marginTop: Spacing.two,
   },
 });

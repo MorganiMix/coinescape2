@@ -25,7 +25,9 @@ import {
   encryptApiCredentials,
   detectFreshInstall,
   hasAccount as hasLocalAccount,
+  getStoredSetupIp,
   listStoredCredentialExchanges,
+  setStoredSetupIp,
   loadAllocations,
   loadRegistry,
   login as localLogin,
@@ -51,6 +53,7 @@ import {
   newAllocationConfig,
 } from '@/domain/mockData';
 import { clearPriceCache, fetchPrices } from '@/domain/coingecko';
+import { fetchExternalIp } from '@/domain/network';
 import {
   AllocationConfig,
   AllocationTargets,
@@ -107,6 +110,22 @@ interface AppState {
   ) => Promise<{ ok: boolean; canWithdraw?: boolean; error?: string }>;
   disconnectExchange: (id: ExchangeId) => Promise<void>;
   connectedExchanges: Exchange[];
+
+  // ── IP whitelisting ──
+  /** The device's current external IP (null while detecting / on failure). */
+  currentIp: string | null;
+  /** Per-exchange IP the key was set up from (for whitelist-change warnings). */
+  setupIpByExchange: Record<ExchangeId, string>;
+  /** Re-detect the current external IP. */
+  refreshCurrentIp: () => Promise<void>;
+  /**
+   * True when we know the current IP AND a saved setup IP for this exchange and
+   * they differ — i.e. the user likely needs to re-whitelist. False if either
+   * is unknown (never warn on missing data).
+   */
+  ipChangedForExchange: (id: ExchangeId) => boolean;
+  /** Record the current IP as this exchange's setup IP (clears the warning). */
+  updateSetupIp: (id: ExchangeId) => Promise<void>;
   /** Live balances fetched from connected exchanges (empty until refreshed). */
   liveBalances: Record<ExchangeId, BalanceMap>;
   /**
@@ -194,6 +213,15 @@ interface AppState {
   applySavedAddress: (exchangeId: ExchangeId, asset: AssetSymbol, addr: SavedAddress) => void;
   /** Count of enabled coins for one exchange. */
   enabledCountForExchange: (id: ExchangeId) => number;
+  /**
+   * True when the in-memory coin selection differs from what was last saved to
+   * disk. Drives the "save your changes?" prompt when leaving Settings.
+   */
+  allocationsDirty: boolean;
+  /** Persist the current coin selection to disk and mark it as the saved state. */
+  saveAllocationsNow: () => Promise<void>;
+  /** Discard unsaved edits, restoring the last-saved coin selection everywhere. */
+  revertAllocations: () => void;
 
   // Whitelisted withdrawal addresses fetched from exchanges
   savedAddresses: Record<ExchangeId, SavedAddress[]>;
@@ -227,7 +255,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [hasAccount, setHasAccount] = useState(false);
   const [username, setUsername] = useState<string | null>(null);
   const [exchanges, setExchanges] = useState<Exchange[]>(initialExchanges);
+  // External IP tracking for API-key IP-whitelist warnings.
+  const [currentIp, setCurrentIp] = useState<string | null>(null);
+  const [setupIpByExchange, setSetupIpByExchange] = useState<Record<ExchangeId, string>>({});
   const [allocations, setAllocations] = useState<AllocationTargets>(defaultAllocationTargets);
+  // Serialized snapshot of the LAST-SAVED coin selection. Edits update
+  // `allocations` (in memory) immediately, but are only written to disk on an
+  // explicit save; comparing against this snapshot tells us if there are unsaved
+  // changes and lets us revert. Seeded on login-restore and profile switch.
+  const [savedAllocationsJson, setSavedAllocationsJson] = useState<string>(() =>
+    JSON.stringify(defaultAllocationTargets)
+  );
   const [profiles, setProfiles] = useState<ProfileMeta[]>([]);
   const [activeProfileId, setActiveProfileId] = useState<string | null>(null);
   const [selectedExchangeId, setSelectedExchangeId] = useState<ExchangeId | null>(null);
@@ -327,7 +365,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Reset in-memory session state so the NEXT login re-hydrates cleanly from
     // disk. Persisted credentials/allocations are NOT deleted here.
     setExchanges(initialExchanges);
+    setSetupIpByExchange({});
+    setCurrentIp(null);
     setAllocations(defaultAllocationTargets);
+    setSavedAllocationsJson(JSON.stringify(defaultAllocationTargets));
     setProfiles([]);
     setActiveProfileId(null);
     hasHydratedAllocations.current = false;
@@ -368,11 +409,17 @@ export function AppProvider({ children }: { children: ReactNode }) {
       setActiveProfileId(null);
     }
 
-    // 1. Coin selection (allocations). Load BEFORE flipping the hydration guard
-    //    so the persist-on-change effect can't clobber it with the default.
+    // 1. Coin selection (allocations). Seed both the in-memory state and the
+    //    saved-snapshot baseline so a freshly-loaded config is NOT seen as
+    //    "dirty" (no spurious save prompt on first visit to Settings).
     try {
       const saved = await loadAllocations();
-      if (saved) setAllocations(saved);
+      if (saved) {
+        setAllocations(saved);
+        setSavedAllocationsJson(JSON.stringify(saved));
+      } else {
+        setSavedAllocationsJson(JSON.stringify(defaultAllocationTargets));
+      }
     } catch {
       // Ignore — fall back to the default selection.
     } finally {
@@ -388,6 +435,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ids = [];
     }
     if (ids.length === 0) return;
+
+    // Load each exchange's recorded setup IP, and detect the current IP in the
+    // background, so the UI can warn when the whitelisted IP has changed.
+    try {
+      const pairs = await Promise.all(
+        ids.map(async (id) => [id, await getStoredSetupIp(id)] as const)
+      );
+      const map: Record<string, string> = {};
+      for (const [id, ip] of pairs) if (ip) map[id] = ip;
+      setSetupIpByExchange(map);
+    } catch {
+      // Non-fatal — no warnings if we can't read setup IPs.
+    }
+    void fetchExternalIp()
+      .then((ip) => ip && setCurrentIp(ip))
+      .catch(() => {});
 
     const masks = await Promise.all(
       ids.map(async (id) => {
@@ -535,6 +598,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
               : ex
           )
         );
+        // Record the IP this key was set up from, so we can warn if it changes
+        // (many exchanges let you whitelist an API key to specific IPs).
+        void fetchExternalIp()
+          .then((ip) => {
+            if (!ip) return;
+            setCurrentIp(ip);
+            setSetupIpByExchange((prev) => ({ ...prev, [id]: ip }));
+            void setStoredSetupIp(id, ip).catch(() => {});
+          })
+          .catch(() => {});
         return { ok: true, canWithdraw: test.canWithdraw };
       } catch (e) {
         await deleteCredentials(id).catch(() => {});
@@ -599,6 +672,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
       delete next[id];
       return next;
     });
+    setSetupIpByExchange((prev) => {
+      const next = { ...prev };
+      delete next[id];
+      return next;
+    });
     setExchanges((prev) =>
       prev.map((ex) =>
         ex.id === id
@@ -613,6 +691,36 @@ export function AppProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  /** Re-detect the device's current external IP. */
+  const refreshCurrentIp = useCallback(async () => {
+    const ip = await fetchExternalIp().catch(() => null);
+    if (ip) setCurrentIp(ip);
+  }, []);
+
+  /**
+   * True only when BOTH the current IP and a saved setup IP for this exchange
+   * are known and they differ. Never warns on missing data.
+   */
+  const ipChangedForExchange = useCallback(
+    (id: ExchangeId): boolean => {
+      const saved = setupIpByExchange[id];
+      return Boolean(saved && currentIp && saved !== currentIp);
+    },
+    [setupIpByExchange, currentIp]
+  );
+
+  /** Accept the current IP as this exchange's setup IP (clears the warning). */
+  const updateSetupIp = useCallback(
+    async (id: ExchangeId) => {
+      const ip = currentIp ?? (await fetchExternalIp().catch(() => null));
+      if (!ip) return;
+      setCurrentIp(ip);
+      setSetupIpByExchange((prev) => ({ ...prev, [id]: ip }));
+      await setStoredSetupIp(id, ip).catch(() => {});
+    },
+    [currentIp]
+  );
+
   // ───────────────────────────── Profiles ─────────────────────────────────
 
   /**
@@ -624,6 +732,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const rehydrateActiveProfile = useCallback(
     async (key: Uint8Array) => {
       setExchanges(initialExchanges);
+      setSetupIpByExchange({});
       setAllocations(defaultAllocationTargets);
       hasHydratedAllocations.current = false;
       setLiveDetailed({});
@@ -889,13 +998,26 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [exchanges]
   );
 
-  // Persist the emergency coin selection whenever it changes — but only after
-  // the saved copy has been hydrated at login, so we never overwrite stored
-  // data with the in-memory default. Best-effort; storage errors are ignored.
-  useEffect(() => {
-    if (!isAuthenticated || !hasHydratedAllocations.current) return;
-    void saveAllocations(allocations).catch(() => {});
-  }, [allocations, isAuthenticated]);
+  // Coin-selection edits are NOT auto-persisted. They live in `allocations`
+  // (in memory) until the user explicitly saves, so they can also be discarded
+  // (reverted to the last-saved snapshot) when leaving Settings without saving.
+  const allocationsDirty = JSON.stringify(allocations) !== savedAllocationsJson;
+
+  /** Persist the current coin selection and mark it as the new saved state. */
+  const saveAllocationsNow = useCallback(async () => {
+    const snapshot = allocations;
+    await saveAllocations(snapshot);
+    setSavedAllocationsJson(JSON.stringify(snapshot));
+  }, [allocations]);
+
+  /** Discard unsaved edits — restore the last-saved coin selection. */
+  const revertAllocations = useCallback(() => {
+    try {
+      setAllocations(JSON.parse(savedAllocationsJson) as AllocationTargets);
+    } catch {
+      // Snapshot should always be valid JSON; ignore if not.
+    }
+  }, [savedAllocationsJson]);
 
   // Keep the Settings exchange selector pointed at a valid connected exchange:
   // default to the first connected one, and clear/repoint if it disconnects.
@@ -1116,6 +1238,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
     reconnectExchange,
     disconnectExchange,
     connectedExchanges,
+    currentIp,
+    setupIpByExchange,
+    refreshCurrentIp,
+    ipChangedForExchange,
+    updateSetupIp,
     liveBalances,
     refreshBalances,
     isRefreshingBalances,
@@ -1141,6 +1268,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     updateAllocation,
     applySavedAddress,
     enabledCountForExchange,
+    allocationsDirty,
+    saveAllocationsNow,
+    revertAllocations,
     savedAddresses,
     isFetchingAddresses,
     fetchWithdrawAddresses,

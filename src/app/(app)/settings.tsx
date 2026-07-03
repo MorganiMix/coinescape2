@@ -1,10 +1,13 @@
-import { useRouter } from 'expo-router';
-import { useEffect, useMemo, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Alert, BackHandler, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, UIManager, View } from 'react-native';
 
 import { AssetBadge } from '@/components/AssetBadge';
 import { ExchangeSelector } from '@/components/ExchangeSelector';
+import { ExchangeConnectForm } from '@/components/ExchangeConnectForm';
+import { IpChangeWarning } from '@/components/IpChangeWarning';
 import { NavMenu } from '@/components/NavMenu';
+import { setLeaveGuard } from '@/components/navGuard';
 import { ChainPicker } from '@/components/ChainPicker';
 import { SavedAddressPicker } from '@/components/SavedAddressPicker';
 import { ThemedText } from '@/components/themed-text';
@@ -15,22 +18,9 @@ import { StatusDot } from '@/components/ui/StatusDot';
 import { TextField } from '@/components/ui/TextField';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { ASSET_META, ConnectionStatus, ExchangeId } from '@/domain/types';
-import {
-  REQUIRES_PASSPHRASE,
-  REQUIRES_TOTP,
-  hasAddressBook,
-  hasChainSelection,
-  isLiveSupported,
-} from '@/exchange';
+import { EXCHANGE_GUIDES } from '@/domain/exchangeGuides';
+import { hasAddressBook, hasChainSelection } from '@/exchange';
 import { useAppStore } from '@/store/AppStore';
-
-interface CredDraft {
-  apiKey: string;
-  apiSecret: string;
-  passphrase: string;
-  totpSecret: string;
-}
-const EMPTY_DRAFT: CredDraft = { apiKey: '', apiSecret: '', passphrase: '', totpSecret: '' };
 
 const FALLBACK_ASSETS = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'USDT', 'USDC', 'XRP'];
 
@@ -50,7 +40,6 @@ function fmtUsd(value: number): string {
 export default function SettingsScreen() {
   const {
     exchanges,
-    connectExchange,
     reconnectExchange,
     disconnectExchange,
     connectedExchanges,
@@ -73,80 +62,65 @@ export default function SettingsScreen() {
     fetchChains,
     profiles,
     activeProfileId,
+    allocations,
+    allocationsDirty,
+    saveAllocationsNow,
+    revertAllocations,
+    refreshCurrentIp,
   } = useAppStore();
   const router = useRouter();
+  // Optional deep-link param from the home page: `?exchange=<id>` opens and
+  // expands that exchange's API configuration directly.
+  const { exchange: exchangeParam } = useLocalSearchParams<{ exchange?: string }>();
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
 
-  const [drafts, setDrafts] = useState<Record<string, CredDraft>>({});
-  const [connecting, setConnecting] = useState<Record<string, boolean>>({});
   const [reconnecting, setReconnecting] = useState<Record<string, boolean>>({});
+  // Which exchange's API-config card is expanded (null = all collapsed).
+  const [expandedId, setExpandedId] = useState<string | null>(null);
   // Which asset's saved-address picker is open (null = closed).
   const [pickerAsset, setPickerAsset] = useState<string | null>(null);
   // Which asset's chain/network picker is open (null = closed).
   const [chainPickerAsset, setChainPickerAsset] = useState<string | null>(null);
 
-  const draftFor = (id: string): CredDraft => drafts[id] ?? EMPTY_DRAFT;
-  const patchDraft = (id: string, patch: Partial<CredDraft>) =>
-    setDrafts((d) => ({ ...d, [id]: { ...draftFor(id), ...patch } }));
+  // Enable smooth expand/collapse on Android.
+  useEffect(() => {
+    if (
+      Platform.OS === 'android' &&
+      UIManager.setLayoutAnimationEnabledExperimental
+    ) {
+      UIManager.setLayoutAnimationEnabledExperimental(true);
+    }
+  }, []);
 
-  const handleConnect = async (id: string, name: string) => {
-    const draft = draftFor(id);
-    const apiKey = draft.apiKey.trim();
-    const apiSecret = draft.apiSecret.trim();
-    const passphrase = draft.passphrase.trim();
-    // Strip authenticator-app grouping spaces from the base32 2FA seed.
-    const totpSecret = draft.totpSecret.replace(/\s/g, '');
+  // Re-detect the current external IP on entry so IP-change warnings are fresh.
+  useEffect(() => {
+    void refreshCurrentIp();
+  }, [refreshCurrentIp]);
 
-    if (!isLiveSupported(id)) {
-      Alert.alert('Not supported', `Live connection for ${name} is not available yet.`);
-      return;
-    }
-    if (apiKey.length < 6 || apiSecret.length < 6) {
-      Alert.alert(
-        'Missing credentials',
-        'Enter both the API key and secret (with WITHDRAW permission enabled).'
-      );
-      return;
-    }
-    if (REQUIRES_PASSPHRASE.has(id) && passphrase.length === 0) {
-      Alert.alert('Passphrase required', `${name} requires the API passphrase you set when creating the key.`);
-      return;
-    }
-    if (REQUIRES_TOTP.has(id) && totpSecret.length === 0) {
-      Alert.alert(
-        '2FA secret required',
-        `${name} requires a 2FA code on every API withdrawal. Enter your Deribit 2FA secret (the base32 seed shown when you set up your authenticator) so panic withdrawals can complete automatically.`
-      );
-      return;
-    }
-
-    setConnecting((c) => ({ ...c, [id]: true }));
-    try {
-      const result = await connectExchange(id, {
-        apiKey,
-        apiSecret,
-        passphrase: REQUIRES_PASSPHRASE.has(id) ? passphrase : undefined,
-        totpSecret: REQUIRES_TOTP.has(id) ? totpSecret : undefined,
-      });
-      if (!result.ok) {
-        Alert.alert('Connection failed', result.error ?? 'Could not verify these API credentials.');
-        return;
-      }
-      setDrafts((d) => ({ ...d, [id]: EMPTY_DRAFT }));
-      setSelectedExchangeId(id);
-      // Warm the address book for the saved-address picker — only for exchanges
-      // that actually expose one (others use manual entry).
-      if (hasAddressBook(id)) fetchWithdrawAddresses(id).catch(() => {});
-      if (result.canWithdraw === false) {
-        Alert.alert(
-          'Connected — but no WITHDRAW permission',
-          `${name} is connected for balances, but this API key cannot withdraw. Emergency withdrawals will fail until you enable the WITHDRAW permission on the key.`
-        );
-      }
-    } finally {
-      setConnecting((c) => ({ ...c, [id]: false }));
-    }
+  const toggleExpanded = (id: string) => {
+    LayoutAnimation.configureNext(LayoutAnimation.Presets.easeInEaseOut);
+    setExpandedId((cur) => (cur === id ? null : id));
   };
+
+  // React to the deep-link param `?exchange=<id>`. Seeding LOCAL expand state
+  // during render (for a value that changed since the last render) is fine, but
+  // the cross-component side-effects — selecting the exchange in the store and
+  // consuming the nav param — must run after commit, in an effect, to avoid
+  // "update a component while rendering a different component" warnings.
+  const [lastExchangeParam, setLastExchangeParam] = useState<string | null>(null);
+  if (exchangeParam && exchangeParam !== lastExchangeParam) {
+    setLastExchangeParam(exchangeParam);
+    setExpandedId(exchangeParam);
+  }
+  useEffect(() => {
+    if (!exchangeParam) return;
+    if (connectedExchanges.some((ex) => ex.id === exchangeParam)) {
+      setSelectedExchangeId(exchangeParam);
+    }
+    // Consume the param so returning to Settings via the menu doesn't re-expand.
+    router.setParams({ exchange: undefined });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [exchangeParam]);
 
   const handleReconnect = async (id: string, name: string) => {
     setReconnecting((c) => ({ ...c, [id]: true }));
@@ -262,43 +236,127 @@ export default function SettingsScreen() {
     return match?.label ?? networkId;
   };
 
-  // Enabled coins on the selected exchange that still lack a destination.
-  const missingDestinations = selectedExchangeId
-    ? exchangeAssets.filter((asset) => {
-        const cfg = exchangeAllocations[asset];
-        if (!cfg?.enabled) return false;
+  /**
+   * Enabled coins across ALL connected exchanges that still lack a recipient,
+   * labelled "EXCHANGE · ASSET". Used to validate a Save — every enabled coin
+   * must have a destination before we persist.
+   */
+  const missingRecipientsAll = useMemo(() => {
+    const out: string[] = [];
+    for (const ex of connectedExchanges) {
+      const cfgs = allocations.byExchange[ex.id] ?? {};
+      for (const [asset, cfg] of Object.entries(cfgs)) {
+        if (!cfg?.enabled) continue;
         const hasAddress = (cfg.address ?? '').trim().length > 0;
         const hasKraken = (cfg.krakenKey ?? '').trim().length > 0;
-        return !hasAddress && !hasKraken;
-      })
-    : [];
+        if (!hasAddress && !hasKraken) out.push(`${ex.name} · ${asset}`);
+      }
+    }
+    return out;
+  }, [connectedExchanges, allocations]);
 
-  const handleSave = () => {
-    if (connectedExchanges.length === 0) {
-      Alert.alert('No exchanges connected', 'Connect an exchange before configuring an escape.');
-      return;
-    }
-    const totalEnabled = connectedExchanges.reduce(
-      (n, ex) => n + enabledCountForExchange(ex.id),
-      0
-    );
-    if (totalEnabled === 0) {
-      Alert.alert('No coins selected', 'Enable at least one coin on a connected exchange and set its recipient.');
-      return;
-    }
-    if (missingDestinations.length > 0) {
+  /**
+   * Validate + persist the coin selection. Saving with NO coins selected is
+   * allowed, but any ENABLED coin must have a recipient — otherwise we block
+   * (returning false) so the caller can keep the user on the page.
+   */
+  const saveSettings = useCallback(async (): Promise<boolean> => {
+    if (missingRecipientsAll.length > 0) {
       Alert.alert(
         'Missing recipient',
-        `Add a recipient (saved address or Kraken wallet name) for: ${missingDestinations.join(', ')}.`
+        `Add a recipient (saved address or Kraken wallet name) for: ${missingRecipientsAll.join(
+          ', '
+        )}.`
       );
-      return;
+      return false;
     }
-    Alert.alert('Saved', 'Emergency settings stored securely.');
+    await saveAllocationsNow();
+    return true;
+  }, [missingRecipientsAll, saveAllocationsNow]);
+
+  const handleSave = async () => {
+    if (await saveSettings()) {
+      Alert.alert('Saved', 'Emergency settings stored securely.');
+    }
   };
+
+  // ── Unsaved-changes guard ────────────────────────────────────────────────
+  // Keep the latest dirty/save/revert in a ref so the guard registered once can
+  // always see current values without re-registering on every keystroke.
+  const leaveStateRef = useRef({ allocationsDirty, saveSettings, revertAllocations });
+  useEffect(() => {
+    leaveStateRef.current = { allocationsDirty, saveSettings, revertAllocations };
+  }, [allocationsDirty, saveSettings, revertAllocations]);
+
+  const promptSaveThen = useCallback((proceed: () => void): boolean => {
+    const { allocationsDirty: dirty, saveSettings: save, revertAllocations: revert } =
+      leaveStateRef.current;
+    if (!dirty) return false; // nothing to save — let navigation happen
+    Alert.alert(
+      'Save your changes?',
+      'You have unsaved changes to your emergency coin selection.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: "Don't save",
+          style: 'destructive',
+          onPress: () => {
+            revert();
+            proceed();
+          },
+        },
+        {
+          text: 'Save',
+          onPress: async () => {
+            // Block leaving if validation fails (missing recipient) — stay put.
+            if (await save()) proceed();
+          },
+        },
+      ]
+    );
+    return true; // intercepted — we'll navigate ourselves after the choice
+  }, []);
+
+  // Register the leave-guard for NavMenu-driven navigation + sign-out.
+  useEffect(() => setLeaveGuard(promptSaveThen), [promptSaveThen]);
+
+  /** Run an in-page navigation through the unsaved-changes guard. */
+  const guardedNav = useCallback(
+    (nav: () => void) => {
+      if (!promptSaveThen(nav)) nav();
+    },
+    [promptSaveThen]
+  );
+
+  // Android hardware back: intercept the same way.
+  useEffect(() => {
+    const sub = BackHandler.addEventListener('hardwareBackPress', () => {
+      return promptSaveThen(() => {
+        // On "Don't save"/"Save" we revert/persist, then go home.
+        router.replace('/(app)/panic');
+      });
+    });
+    return () => sub.remove();
+  }, [promptSaveThen, router]);
+
+  // Safety net: if this screen unmounts while still dirty (e.g. an unguarded
+  // navigation path), discard the unsaved edits so a panic never uses them.
+  useEffect(() => {
+    return () => {
+      if (leaveStateRef.current.allocationsDirty) {
+        leaveStateRef.current.revertAllocations();
+      }
+    };
+  }, []);
 
   return (
     <Screen>
-      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView
+        contentContainerStyle={styles.content}
+        showsVerticalScrollIndicator={false}
+        keyboardShouldPersistTaps="handled"
+        keyboardDismissMode="interactive"
+        automaticallyAdjustKeyboardInsets>
         <View style={styles.pageHeader}>
           <ThemedText type="subtitle" style={styles.pageTitle}>
             API & Emergency Settings
@@ -309,7 +367,7 @@ export default function SettingsScreen() {
         {/* Active-profile indicator → Profiles screen */}
         {activeProfile && (
           <Pressable
-            onPress={() => router.replace('/(app)/profiles')}
+            onPress={() => guardedNav(() => router.replace('/(app)/profiles'))}
             style={({ pressed }) => [styles.profileBar, pressed && { opacity: 0.7 }]}>
             <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
               Active profile: <ThemedText style={styles.profileBarName}>{activeProfile.name}</ThemedText>
@@ -324,35 +382,48 @@ export default function SettingsScreen() {
         <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
           EXCHANGE API CONFIGURATION
         </ThemedText>
+        <ThemedText type="small" themeColor="textSecondary" style={styles.sectionHint}>
+          Tap an exchange to show its API key configuration.
+        </ThemedText>
         <View style={styles.group}>
-          {exchanges.map((ex) => (
+          {exchanges.map((ex) => {
+            const expanded = expandedId === ex.id;
+            return (
             <Card key={ex.id} style={styles.exchangeCard}>
-              <View style={styles.exchangeHead}>
+              <Pressable
+                onPress={() => toggleExpanded(ex.id)}
+                style={({ pressed }) => [styles.exchangeHead, pressed && styles.pressed]}
+                hitSlop={4}>
                 <View style={styles.exchangeLeft}>
                   <StatusDot status={ex.connectionStatus} />
                   <ThemedText style={styles.exchangeName}>{ex.name}</ThemedText>
                 </View>
-                <ThemedText
-                  type="small"
-                  style={{
-                    color:
-                      ex.connectionStatus === ConnectionStatus.ERROR
-                        ? Brand.danger
+                <View style={styles.exchangeHeadRight}>
+                  <ThemedText
+                    type="small"
+                    style={{
+                      color:
+                        ex.connectionStatus === ConnectionStatus.ERROR
+                          ? Brand.danger
+                          : ex.isConnected
+                            ? Brand.success
+                            : Brand.textMuted,
+                    }}>
+                    {ex.connectionStatus === ConnectionStatus.ERROR
+                      ? 'Disconnected'
+                      : ex.connectionStatus === ConnectionStatus.CONNECTING
+                        ? 'Connecting…'
                         : ex.isConnected
-                          ? Brand.success
-                          : Brand.textMuted,
-                  }}>
-                  {ex.connectionStatus === ConnectionStatus.ERROR
-                    ? 'Disconnected'
-                    : ex.connectionStatus === ConnectionStatus.CONNECTING
-                      ? 'Connecting…'
-                      : ex.isConnected
-                        ? 'Connected'
-                        : 'Disconnected'}
-                </ThemedText>
-              </View>
+                          ? 'Connected'
+                          : 'Not linked'}
+                  </ThemedText>
+                  <ThemedText style={[styles.chevron, expanded && styles.chevronOpen]}>
+                    ›
+                  </ThemedText>
+                </View>
+              </Pressable>
 
-              {ex.isConnected ? (
+              {!expanded ? null : ex.isConnected ? (
                 <View style={styles.connectedWrap}>
                   <View style={styles.connectedRow}>
                     <ThemedText type="small" themeColor="textSecondary">
@@ -364,6 +435,7 @@ export default function SettingsScreen() {
                       </ThemedText>
                     </Pressable>
                   </View>
+                  <IpChangeWarning id={ex.id} name={ex.name} />
                   {/* Recovery: the exchange dropped the link (key marked ERROR).
                       Reconnect re-validates the stored credentials — no re-entry. */}
                   {ex.connectionStatus === ConnectionStatus.ERROR && (
@@ -385,66 +457,37 @@ export default function SettingsScreen() {
                     </>
                   )}
                 </View>
-              ) : isLiveSupported(ex.id) ? (
+              ) : (
                 <View style={styles.connectForm}>
-                  <TextField
-                    placeholder={`${ex.name} API key`}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    value={draftFor(ex.id).apiKey}
-                    onChangeText={(t) => patchDraft(ex.id, { apiKey: t })}
-                  />
-                  <TextField
-                    placeholder={`${ex.name} API secret`}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    secureToggle
-                    value={draftFor(ex.id).apiSecret}
-                    onChangeText={(t) => patchDraft(ex.id, { apiSecret: t })}
-                  />
-                  {REQUIRES_PASSPHRASE.has(ex.id) && (
-                    <TextField
-                      placeholder="API passphrase"
-                      autoCapitalize="none"
-                      autoCorrect={false}
-                      secureToggle
-                      value={draftFor(ex.id).passphrase}
-                      onChangeText={(t) => patchDraft(ex.id, { passphrase: t })}
-                    />
-                  )}
-                  {REQUIRES_TOTP.has(ex.id) && (
-                    <>
-                      <TextField
-                        label="2FA secret (base32)"
-                        placeholder="e.g. JBSWY3DPEHPK3PXP"
-                        autoCapitalize="characters"
-                        autoCorrect={false}
-                        secureToggle
-                        value={draftFor(ex.id).totpSecret}
-                        onChangeText={(t) => patchDraft(ex.id, { totpSecret: t })}
-                      />
-                      <ThemedText type="small" themeColor="textSecondary" style={styles.totpHint}>
-                        {ex.name} requires a 2FA code on every API withdrawal. Paste the base32 seed
-                        shown when you set up your authenticator (not the 6-digit code) — it&apos;s
-                        stored encrypted and used to generate the code automatically during a panic.
+                  {EXCHANGE_GUIDES[ex.id] && (
+                    <Pressable
+                      onPress={() =>
+                        guardedNav(() =>
+                          router.push({ pathname: '/(app)/exchange-guide', params: { exchange: ex.id } })
+                        )
+                      }
+                      style={({ pressed }) => [styles.guideLink, pressed && styles.pressed]}
+                      hitSlop={4}>
+                      <ThemedText style={styles.guideLinkIcon}>📘</ThemedText>
+                      <ThemedText type="small" style={styles.guideLinkText}>
+                        How to connect {ex.name} →
                       </ThemedText>
-                    </>
+                    </Pressable>
                   )}
-                  <GradientButton
-                    label={connecting[ex.id] ? 'Testing…' : 'Connect & Test'}
-                    variant="outline"
-                    disabled={connecting[ex.id]}
-                    style={styles.connectBtn}
-                    onPress={() => handleConnect(ex.id, ex.name)}
+                  <ExchangeConnectForm
+                    id={ex.id}
+                    name={ex.name}
+                    onConnected={(id) => {
+                      setSelectedExchangeId(id);
+                      // Warm the address book for exchanges that expose one.
+                      if (hasAddressBook(id)) fetchWithdrawAddresses(id).catch(() => {});
+                    }}
                   />
                 </View>
-              ) : (
-                <ThemedText type="small" themeColor="textSecondary">
-                  Live connection for {ex.name} is coming soon.
-                </ThemedText>
               )}
             </Card>
-          ))}
+            );
+          })}
         </View>
 
         {/* Emergency coin selection — scoped to the selected exchange */}
@@ -619,7 +662,7 @@ export default function SettingsScreen() {
         </View>
 
         <GradientButton
-          label="Save & Secure Settings"
+          label={allocationsDirty ? 'Save & Secure Settings' : 'Settings Saved'}
           variant="accent"
           icon={<ThemedText style={{ fontSize: 16 }}>🔒</ThemedText>}
           onPress={handleSave}
@@ -715,6 +758,9 @@ const styles = StyleSheet.create({
   group: { gap: Spacing.two },
   exchangeCard: { gap: Spacing.three },
   exchangeHead: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+  exchangeHeadRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  chevron: { fontSize: 22, color: Brand.textMuted, transform: [{ rotate: '90deg' }] },
+  chevronOpen: { transform: [{ rotate: '270deg' }] },
   exchangeLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
   exchangeName: { fontSize: 16, fontWeight: '700' },
   connectedWrap: { gap: Spacing.two },
@@ -731,6 +777,17 @@ const styles = StyleSheet.create({
   },
   reconnectIcon: { fontSize: 14 },
   connectForm: { gap: Spacing.two },
+  guideLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: Spacing.two,
+    backgroundColor: Brand.accentSoft,
+    borderRadius: Radius.md,
+    paddingHorizontal: Spacing.three,
+    paddingVertical: Spacing.two,
+  },
+  guideLinkIcon: { fontSize: 14 },
+  guideLinkText: { color: Brand.accent, fontWeight: '700', flex: 1 },
   connectBtn: { minHeight: 44 },
   totpHint: { lineHeight: 16 },
   coinCard: { gap: Spacing.three },

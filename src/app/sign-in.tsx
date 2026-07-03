@@ -100,7 +100,7 @@ export default function SignInScreen() {
           <View style={styles.form}>
             <TextField
               label="Username"
-              placeholder="Choose a username"
+              placeholder={isCreating ? 'Choose a username' : 'Enter your username'}
               autoCapitalize="none"
               autoCorrect={false}
               autoComplete="username"

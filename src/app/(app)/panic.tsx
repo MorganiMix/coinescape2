@@ -1,7 +1,9 @@
+import { useRouter } from 'expo-router';
 import { useEffect, useMemo, useState } from 'react';
-import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Alert, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 
 import { AssetBadge } from '@/components/AssetBadge';
+import { IpChangeWarning } from '@/components/IpChangeWarning';
 import { NavMenu } from '@/components/NavMenu';
 import { ResultsSheet } from '@/components/ResultsSheet';
 import { SwipeToConfirm } from '@/components/SwipeToConfirm';
@@ -40,13 +42,55 @@ export default function PanicScreen() {
     runEmergencyWithdrawal,
     lastResults,
     clearResults,
-    totalsByAsset,
     totalsUsdByAsset,
     refreshBalances,
     isRefreshingBalances,
+    allocations,
+    liveBalances,
+    priceUsd,
+    enabledCountForExchange,
+    refreshCurrentIp,
   } = useAppStore();
 
   const [armed, setArmed] = useState(false);
+  const router = useRouter();
+
+  /** Open Settings focused on a specific exchange's API configuration. */
+  const openExchangeConfig = (id: string) => {
+    router.push({ pathname: '/(app)/settings', params: { exchange: id } });
+  };
+
+  /**
+   * Tap handler for the panic ring. Guard the two states where there's nothing
+   * to withdraw — no exchange connected, or no coin selected — by prompting the
+   * user (with a shortcut to Settings) instead of silently doing nothing.
+   * Otherwise arm/disarm the emergency withdrawal.
+   */
+  const handlePanicPress = () => {
+    if (connectedExchanges.length === 0) {
+      Alert.alert(
+        'Please connect an exchange',
+        'You need at least one connected exchange before you can run an emergency withdrawal.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Connect exchange', onPress: () => router.push('/(app)/settings') },
+        ]
+      );
+      return;
+    }
+    if (totalEnabledCoins === 0) {
+      Alert.alert(
+        'Please choose at least one coin to withdraw',
+        'Select the coins to rescue in Settings → Emergency Coin Selection before running a panic.',
+        [
+          { text: 'Not now', style: 'cancel' },
+          { text: 'Choose coins', onPress: () => router.push('/(app)/settings') },
+        ]
+      );
+      return;
+    }
+    setArmed((a) => !a);
+  };
 
   // Auto-fetch real balances when the panic screen opens / exchanges change.
   useEffect(() => {
@@ -56,19 +100,40 @@ export default function PanicScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectedExchanges.length]);
 
-  const balanceRows = useMemo(
-    () =>
-      Object.entries(totalsByAsset)
-        .filter(([, amount]) => amount > 0)
-        .map(([asset, amount]) => {
-          // Prefer the USD value the exchange API reported; fall back to a
-          // local estimate only when no exchange could price the asset.
-          const reported = totalsUsdByAsset[asset];
-          const usd = reported != null ? reported : usdValue(asset, amount);
-          return { asset, amount, usd, estimated: reported == null };
-        })
-        .sort((a, b) => b.usd - a.usd),
-    [totalsByAsset, totalsUsdByAsset]
+  // Refresh the current external IP on entry so IP-change warnings are current.
+  useEffect(() => {
+    void refreshCurrentIp();
+  }, [refreshCurrentIp]);
+
+  // Only the coins the user has ENABLED (checked) in the emergency selection —
+  // and only where there's an actual balance to move — are shown/summed here.
+  // A panic withdraws exactly this set, so the preview matches what will happen.
+  const balanceRows = useMemo(() => {
+    const byAsset: Record<string, number> = {};
+    for (const [exchangeId, assetCfgs] of Object.entries(allocations.byExchange)) {
+      const bals = liveBalances[exchangeId];
+      if (!bals) continue;
+      for (const [asset, cfg] of Object.entries(assetCfgs)) {
+        if (!cfg?.enabled) continue;
+        const amount = bals[asset] ?? 0;
+        if (amount > 0) byAsset[asset] = (byAsset[asset] ?? 0) + amount;
+      }
+    }
+    return Object.entries(byAsset)
+      .map(([asset, amount]) => {
+        // CoinGecko-first pricing (same as elsewhere), falling back to the
+        // exchange-reported total, then a local estimate.
+        const usd = priceUsd(asset, amount, totalsUsdByAsset[asset] ?? null) ?? usdValue(asset, amount);
+        const estimated = priceUsd(asset, amount, totalsUsdByAsset[asset] ?? null) == null;
+        return { asset, amount, usd, estimated };
+      })
+      .sort((a, b) => b.usd - a.usd);
+  }, [allocations, liveBalances, priceUsd, totalsUsdByAsset]);
+
+  // Total coins the user has enabled (checked) across connected exchanges.
+  const totalEnabledCoins = connectedExchanges.reduce(
+    (n, ex) => n + enabledCountForExchange(ex.id),
+    0
   );
 
   const totalUsd = useMemo(
@@ -121,42 +186,64 @@ export default function PanicScreen() {
         </View>
         <Card style={styles.exchangeCard}>
           {exchanges.map((ex, i) => (
-            <View
+            <Pressable
               key={ex.id}
-              style={[styles.exchangeRow, i < exchanges.length - 1 && styles.rowDivider]}>
+              onPress={() => openExchangeConfig(ex.id)}
+              style={({ pressed }) => [
+                styles.exchangeRow,
+                i < exchanges.length - 1 && styles.rowDivider,
+                pressed && styles.rowPressed,
+              ]}>
               <View style={styles.exchangeLeft}>
                 <StatusDot status={ex.connectionStatus} />
                 <ThemedText style={styles.exchangeName}>{ex.name}</ThemedText>
               </View>
-              <ThemedText
-                type="small"
-                themeColor="textSecondary"
-                style={{ color: ex.isConnected ? Brand.success : Brand.textMuted }}>
-                {ex.isConnected ? ex.apiKeyMasked ?? 'Connected' : 'Not linked'}
-              </ThemedText>
-            </View>
+              <View style={styles.exchangeRight}>
+                <ThemedText
+                  type="small"
+                  themeColor="textSecondary"
+                  style={{ color: ex.isConnected ? Brand.success : Brand.textMuted }}>
+                  {ex.isConnected ? ex.apiKeyMasked ?? 'Connected' : 'Not linked'}
+                </ThemedText>
+                <ThemedText style={styles.rowChevron}>›</ThemedText>
+              </View>
+            </Pressable>
           ))}
         </Card>
+
+        {/* IP-change warnings for connected exchanges (compact, tappable to fix). */}
+        {connectedExchanges.map((ex) => (
+          <Pressable key={`ipwarn-${ex.id}`} onPress={() => openExchangeConfig(ex.id)}>
+            <IpChangeWarning id={ex.id} name={ex.name} compact />
+          </Pressable>
+        ))}
 
         {/* Panic Button */}
         <View style={styles.panicWrap}>
           <Pressable
-            disabled={connectedExchanges.length === 0}
-            onPress={() => setArmed((a) => !a)}
+            onPress={handlePanicPress}
             style={({ pressed }) => [pressed && { transform: [{ scale: 0.97 }] }]}>
             <Gradient colors={Gradients.panicRing} direction="vertical" style={styles.panicRing}>
               <View style={styles.panicInner}>
                 <ThemedText style={styles.panicTitle}>COIN ESCAPE</ThemedText>
                 <ThemedText style={styles.panicSub}>
-                  {armed ? 'Swipe below to confirm' : 'Tap to arm emergency withdrawal'}
+                  {connectedExchanges.length === 0
+                    ? 'Tap to connect an exchange'
+                    : totalEnabledCoins === 0
+                      ? 'Tap to choose coins to withdraw'
+                      : armed
+                        ? 'Swipe below to confirm'
+                        : 'Tap to arm emergency withdrawal'}
                 </ThemedText>
               </View>
             </Gradient>
           </Pressable>
           {connectedExchanges.length === 0 && (
-            <ThemedText type="small" style={styles.warnText}>
-              Connect an exchange in Settings to enable withdrawals.
-            </ThemedText>
+            <Pressable onPress={() => router.push('/(app)/settings')} hitSlop={6}>
+              <ThemedText type="small" style={styles.warnText}>
+                Connect an exchange in Settings to enable withdrawals.
+              </ThemedText>
+            </Pressable>
           )}
         </View>
 
@@ -199,7 +286,8 @@ export default function PanicScreen() {
             </ThemedText>
           ) : balanceRows.length === 0 ? (
             <ThemedText type="small" themeColor="textSecondary">
-              No balances found. Pull to refresh.
+              No coins selected to withdraw. Enable coins in Settings → Emergency Coin Selection
+              (only checked coins with a balance appear here).
             </ThemedText>
           ) : (
             <View style={styles.balanceList}>
@@ -327,7 +415,10 @@ const styles = StyleSheet.create({
     paddingVertical: Spacing.two + 2,
   },
   rowDivider: { borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: Brand.cardBorder },
+  rowPressed: { opacity: 0.6 },
   exchangeLeft: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  exchangeRight: { flexDirection: 'row', alignItems: 'center', gap: Spacing.two },
+  rowChevron: { fontSize: 20, color: Brand.textMuted },
   exchangeName: { fontSize: 15, fontWeight: '600' },
   panicWrap: { alignItems: 'center', marginVertical: Spacing.three, gap: Spacing.two },
   panicRing: {

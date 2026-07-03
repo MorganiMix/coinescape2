@@ -36,6 +36,13 @@ export interface StoredCredentials {
   apiSecret: EncryptedData;
   passphrase?: EncryptedData;
   totpSecret?: EncryptedData;
+  /**
+   * External IP address the key was set up / last verified from (plaintext — an
+   * IP is not a secret). Used to warn the user if their IP changes so they can
+   * re-whitelist it on the exchange. Profile-scoped automatically because it
+   * lives in the credential record, which the profile store moves verbatim.
+   */
+  setupIp?: string;
 }
 
 const keyFor = (exchangeId: string) => `coinescape.creds.${exchangeId}.v1`;
@@ -128,6 +135,25 @@ export async function retrieveCredentials(
 export async function deleteCredentials(exchangeId: string): Promise<void> {
   await deleteItem(keyFor(exchangeId));
   await removeFromIndex(exchangeId);
+}
+
+/**
+ * Read the external IP the exchange's key was set up from (plaintext), or null
+ * if none recorded / no credentials stored. No session key needed.
+ */
+export async function getStoredSetupIp(exchangeId: string): Promise<string | null> {
+  const record = await getJSON<StoredCredentials>(keyFor(exchangeId));
+  return record?.setupIp ?? null;
+}
+
+/**
+ * Record/patch the setup IP on an existing credential record. No-op if there is
+ * no stored record for the exchange. Leaves the encrypted fields untouched.
+ */
+export async function setStoredSetupIp(exchangeId: string, ip: string): Promise<void> {
+  const record = await getJSON<StoredCredentials>(keyFor(exchangeId));
+  if (!record) return;
+  await setJSON(keyFor(exchangeId), { ...record, setupIp: ip });
 }
 
 // ───────────────────────────────────────────────────────────────────────────

@@ -15,7 +15,7 @@ export const SUPPORTED_EXCHANGES: { id: ExchangeId; name: string }[] = [
   { id: 'bybit', name: 'Bybit' },
   { id: 'okx', name: 'OKX' },
   { id: 'kucoin', name: 'KuCoin' },
-  { id: 'deribit', name: 'Deribit' },
+  // { id: 'deribit', name: 'Deribit' }, // temporarily disabled
   { id: 'other', name: 'Other' },
 ];
 
@@ -25,7 +25,7 @@ const COMMON_ASSETS = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'XRP', 'USDT', 'USDC']
 const SUPPORTED_ASSETS_BY_EXCHANGE: Record<ExchangeId, AssetSymbol[]> = {
   coinbase: ['BTC', 'ETH', 'SOL', 'USDC'],
   kraken: ['BTC', 'ETH', 'DOT', 'ADA', 'USDT'],
-  deribit: ['BTC', 'ETH', 'USDC', 'USDT'],
+  // deribit: ['BTC', 'ETH', 'USDC', 'USDT'], // temporarily disabled
 };
 
 /**

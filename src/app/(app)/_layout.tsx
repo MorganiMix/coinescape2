@@ -17,6 +17,7 @@ export default function AppTabsLayout() {
       <Tabs.Screen name="settings" />
       <Tabs.Screen name="profiles" />
       <Tabs.Screen name="guide" />
+      <Tabs.Screen name="exchange-guide" />
     </Tabs>
   );
 }
