@@ -19,7 +19,7 @@ import { TextField } from '@/components/ui/TextField';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { ASSET_META, ConnectionStatus, ExchangeId } from '@/domain/types';
 import { EXCHANGE_GUIDES } from '@/domain/exchangeGuides';
-import { hasAddressBook, hasChainSelection } from '@/exchange';
+import { hasAddressBook, hasChainSelection, hasWalletName } from '@/exchange';
 import { useAppStore } from '@/store/AppStore';
 
 const FALLBACK_ASSETS = ['BTC', 'ETH', 'SOL', 'ADA', 'DOT', 'USDT', 'USDC', 'XRP'];
@@ -209,6 +209,8 @@ export default function SettingsScreen() {
   const exchangeHasAddressBook = selectedExchange ? hasAddressBook(selectedExchange.id) : false;
   // Whether the selected exchange exposes a per-asset network/chain list.
   const exchangeHasChainSelection = selectedExchange ? hasChainSelection(selectedExchange.id) : false;
+  // Whether the selected exchange withdraws to a named wallet key (Kraken-style).
+  const exchangeHasWalletName = selectedExchange ? hasWalletName(selectedExchange.id) : false;
 
   const openPicker = (asset: string) => {
     if (!selectedExchangeId) return;
@@ -262,17 +264,21 @@ export default function SettingsScreen() {
    */
   const saveSettings = useCallback(async (): Promise<boolean> => {
     if (missingRecipientsAll.length > 0) {
+      // Only mention the Kraken wallet-name alternative when a connected
+      // exchange actually withdraws to a named key.
+      const anyWalletName = connectedExchanges.some((ex) => hasWalletName(ex.id));
+      const recipientKinds = anyWalletName
+        ? 'saved address or Kraken wallet name'
+        : 'saved address';
       Alert.alert(
         'Missing recipient',
-        `Add a recipient (saved address or Kraken wallet name) for: ${missingRecipientsAll.join(
-          ', '
-        )}.`
+        `Add a recipient (${recipientKinds}) for: ${missingRecipientsAll.join(', ')}.`
       );
       return false;
     }
     await saveAllocationsNow();
     return true;
-  }, [missingRecipientsAll, saveAllocationsNow]);
+  }, [missingRecipientsAll, saveAllocationsNow, connectedExchanges]);
 
   const handleSave = async () => {
     if (await saveSettings()) {
@@ -616,14 +622,16 @@ export default function SettingsScreen() {
                         value={cfg?.address ?? ''}
                         onChangeText={(t) => updateAllocation(selectedExchange.id, asset, { address: t })}
                       />
-                      <TextField
-                        label="Kraken wallet name (optional)"
-                        placeholder="Whitelisted withdrawal key on Kraken"
-                        autoCapitalize="none"
-                        autoCorrect={false}
-                        value={cfg?.krakenKey ?? ''}
-                        onChangeText={(t) => updateAllocation(selectedExchange.id, asset, { krakenKey: t })}
-                      />
+                      {exchangeHasWalletName && (
+                        <TextField
+                          label="Kraken wallet name (optional)"
+                          placeholder="Whitelisted withdrawal key on Kraken"
+                          autoCapitalize="none"
+                          autoCorrect={false}
+                          value={cfg?.krakenKey ?? ''}
+                          onChangeText={(t) => updateAllocation(selectedExchange.id, asset, { krakenKey: t })}
+                        />
+                      )}
                       {/* Network/chain selector — only for chain-capable exchanges. */}
                       {exchangeHasChainSelection && (
                         <Pressable

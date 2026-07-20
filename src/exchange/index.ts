@@ -6,7 +6,9 @@ export {
   REQUIRES_TOTP,
   SUPPORTS_ADDRESS_BOOK,
   SUPPORTS_CHAIN_SELECTION,
+  SUPPORTS_WALLET_NAME,
   hasAddressBook,
   hasChainSelection,
+  hasWalletName,
   isLiveSupported,
 } from './registry';

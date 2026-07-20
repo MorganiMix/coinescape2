@@ -61,3 +61,15 @@ export const SUPPORTS_CHAIN_SELECTION = new Set(['binance', 'bybit', 'okx', 'kuc
 export function hasChainSelection(exchangeId: string): boolean {
   return SUPPORTS_CHAIN_SELECTION.has(exchangeId);
 }
+
+/**
+ * Exchanges that withdraw to a pre-named, whitelisted "withdrawal key" (a wallet
+ * name) rather than a raw address. Only Kraken works this way — so the wallet-name
+ * field is shown only for these exchanges and hidden for every other setup.
+ */
+export const SUPPORTS_WALLET_NAME = new Set(['kraken']);
+
+/** True when this exchange withdraws to a named wallet key (Kraken-style). */
+export function hasWalletName(exchangeId: string): boolean {
+  return SUPPORTS_WALLET_NAME.has(exchangeId);
+}
