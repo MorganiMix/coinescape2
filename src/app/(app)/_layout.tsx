@@ -1,5 +1,4 @@
 import { Redirect, Tabs } from 'expo-router';
-
 import { useAppStore } from '@/store/AppStore';
 
 export default function AppTabsLayout() {
@@ -10,14 +9,14 @@ export default function AppTabsLayout() {
     <Tabs
       screenOptions={{
         headerShown: false,
-        // Navigation is handled by the top-right NavMenu instead of a tab bar.
         tabBarStyle: { display: 'none' },
       }}>
       <Tabs.Screen name="panic" />
       <Tabs.Screen name="settings" />
       <Tabs.Screen name="profiles" />
-      <Tabs.Screen name="guide" />
-      <Tabs.Screen name="exchange-guide" />
+      <Tabs.Screen name="guide" />               {/* General app guide */}
+      <Tabs.Screen name="exchange-guides" />     {/* List of exchange guides */}
+      <Tabs.Screen name="exchange-guide" />      {/* Detail view for a specific exchange */}
     </Tabs>
   );
 }
