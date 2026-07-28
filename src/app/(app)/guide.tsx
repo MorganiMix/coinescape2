@@ -1,100 +1,218 @@
-import { ScrollView, Text, View } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useRouter } from 'expo-router';
+import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+
+import { NavMenu } from '@/components/NavMenu';
+import { ThemedText } from '@/components/themed-text';
+import { Card } from '@/components/ui/Card';
+import { Logo } from '@/components/ui/Logo';
+import { Screen } from '@/components/ui/Screen';
+import { Brand, Radius, Spacing } from '@/constants/theme';
+import { EXCHANGE_GUIDES } from '@/domain/exchangeGuides';
+import { SUPPORTED_EXCHANGES } from '@/domain/mockData';
 
 export default function GuideScreen() {
+  const router = useRouter();
+
+  // List every exchange in the roster that has a guide, preserving roster order.
+  const items = SUPPORTED_EXCHANGES.filter((ex) => EXCHANGE_GUIDES[ex.id]);
+
+  const openGuide = (id: string) => {
+    router.push({ pathname: '/(app)/exchange-guide', params: { exchange: id } });
+  };
+
   return (
-    <SafeAreaView className="flex-1 bg-[#0B1220]">
-      <ScrollView className="flex-1 px-5 pt-5" showsVerticalScrollIndicator={false}>
-        <Text className="text-3xl font-bold text-white border-b border-gray-700 pb-3 mb-5">
-          How Coin Escape Works
-        </Text>
-
-        <Text className="text-base leading-6 text-gray-300 mb-6">
-          Coin Escape is a crypto withdrawal tool that lets you securely connect your exchange accounts via API keys (Read + Withdraw permissions only), monitor your balances, and quickly move your assets to a safe wallet when you need to exit.
-        </Text>
-
-        <Text className="text-2xl font-semibold text-white mt-6 mb-4">Getting Started</Text>
-
-        <View className="flex-row mb-4">
-          <Text className="font-bold text-white mr-2.5 w-6">1.</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            <Text className="font-bold text-white">Install Coin Escape App</Text> – Download the exchange app you want to connect and sign in to your account.
-          </Text>
+    <Screen>
+      <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+        {/* --- Header --- */}
+        <View style={styles.header}>
+          <Logo size={40} />
+          <View style={styles.flex}>
+            <ThemedText type="subtitle" style={styles.title}>
+              Setup Guide
+            </ThemedText>
+            <ThemedText type="small" themeColor="textSecondary">
+              How Coin Escape works + exchange guides
+            </ThemedText>
+          </View>
+          <NavMenu />
         </View>
 
-        <View className="flex-row mb-4">
-          <Text className="font-bold text-white mr-2.5 w-6">2.</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            <Text className="font-bold text-white">Create an API Key</Text> – Generate a new API key on your exchange and enable only:
-            {'\n'}  ✅ Read
-            {'\n'}  ✅ Withdraw
-            {'\n\n'}If your exchange requires a Trusted IP, follow the exchange‑specific guide in Coin Escape and add the provided IP address to your API settings.
-          </Text>
+        {/* ====== NEW: General App UI Guide ====== */}
+        <Card style={styles.generalCard}>
+          <ThemedText style={styles.generalTitle}>How Coin Escape Works</ThemedText>
+
+          <ThemedText type="small" themeColor="textSecondary" style={styles.generalIntro}>
+            Coin Escape is a crypto withdrawal tool that lets you securely connect your
+            exchange accounts via API keys (Read + Withdraw permissions only), monitor
+            your balances, and quickly move your assets to a safe wallet when you need to exit.
+          </ThemedText>
+
+          <ThemedText style={styles.generalHeading}>Getting Started</ThemedText>
+
+          <View style={styles.stepRow}>
+            <ThemedText style={styles.stepNum}>1.</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.stepText}>
+              <ThemedText style={styles.bold}>Install Coin Escape App</ThemedText> – Download the
+              exchange app you want to connect and sign in to your account.
+            </ThemedText>
+          </View>
+
+          <View style={styles.stepRow}>
+            <ThemedText style={styles.stepNum}>2.</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.stepText}>
+              <ThemedText style={styles.bold}>Create an API Key</ThemedText> – Generate a new API key
+              on your exchange and enable only: ✅ Read + ✅ Withdraw.
+              {'\n\n'}If your exchange requires a Trusted IP, follow the exchange‑specific guide
+              and add the provided IP address to your API settings.
+            </ThemedText>
+          </View>
+
+          <View style={styles.stepRow}>
+            <ThemedText style={styles.stepNum}>3.</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.stepText}>
+              <ThemedText style={styles.bold}>Connect to Coin Escape</ThemedText> – Open the app,
+              sign up/log in, and connect your exchange by entering your API Key, Secret Key,
+              and Passphrase (if required). Some exchanges may require a UK VPN.
+            </ThemedText>
+          </View>
+
+          <View style={styles.stepRow}>
+            <ThemedText style={styles.stepNum}>4.</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.stepText}>
+              <ThemedText style={styles.bold}>Verify Your Assets</ThemedText> – Ensure your funds are
+              in your exchange's <ThemedText style={styles.bold}>Funding</ThemedText> or{' '}
+              <ThemedText style={styles.bold}>Trading</ThemedText> account. Web3/external wallets
+              won't appear.
+            </ThemedText>
+          </View>
+
+          <View style={styles.stepRow}>
+            <ThemedText style={styles.stepNum}>5.</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.stepText}>
+              <ThemedText style={styles.bold}>Configure Withdrawals</ThemedText> – Enter your
+              withdrawal address and select the correct blockchain network. Double‑check both.
+            </ThemedText>
+          </View>
+
+          <View style={styles.stepRow}>
+            <ThemedText style={styles.stepNum}>6.</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.stepText}>
+              <ThemedText style={styles.bold}>Withdraw Your Funds</ThemedText> – Tap{' '}
+              <ThemedText style={styles.bold}>Real Withdrawal</ThemedText> to securely withdraw.
+            </ThemedText>
+          </View>
+
+          <ThemedText style={styles.generalHeading}>Security</ThemedText>
+
+          <View style={styles.bulletRow}>
+            <ThemedText style={styles.bullet}>•</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.bulletText}>
+              Coin Escape only requires <ThemedText style={styles.bold}>Read</ThemedText> and{' '}
+              <ThemedText style={styles.bold}>Withdraw</ThemedText> permissions.
+            </ThemedText>
+          </View>
+          <View style={styles.bulletRow}>
+            <ThemedText style={styles.bullet}>•</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.bulletText}>
+              Never enable unnecessary API permissions unless specifically instructed.
+            </ThemedText>
+          </View>
+          <View style={styles.bulletRow}>
+            <ThemedText style={styles.bullet}>•</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.bulletText}>
+              Keep your API Secret and Passphrase secure. Your exchange may only display them once.
+            </ThemedText>
+          </View>
+          <View style={styles.bulletRow}>
+            <ThemedText style={styles.bullet}>•</ThemedText>
+            <ThemedText type="small" themeColor="textSecondary" style={styles.bulletText}>
+              Always verify withdrawal addresses and blockchain networks before confirming any
+              transaction.
+            </ThemedText>
+          </View>
+
+          <ThemedText type="small" themeColor="textSecondary" style={styles.generalFooter}>
+            Coin Escape is designed to make connecting your exchange accounts simple, giving you a
+            fast and convenient way to manage and withdraw your assets from one place.
+          </ThemedText>
+        </Card>
+
+        {/* ====== EXCHANGE GUIDES LIST (existing) ====== */}
+        <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
+          EXCHANGE-SPECIFIC GUIDES
+        </ThemedText>
+        <View style={styles.group}>
+          {items.map((ex) => {
+            const guide = EXCHANGE_GUIDES[ex.id];
+            return (
+              <Pressable
+                key={ex.id}
+                onPress={() => openGuide(ex.id)}
+                style={({ pressed }) => [pressed && styles.pressed]}>
+                <Card style={styles.row}>
+                  <View style={styles.flex}>
+                    <ThemedText style={styles.exchangeName}>{ex.name}</ThemedText>
+                    <ThemedText type="small" themeColor="textSecondary" numberOfLines={2}>
+                      {guide.intro}
+                    </ThemedText>
+                  </View>
+                  <ThemedText style={styles.chevron}>›</ThemedText>
+                </Card>
+              </Pressable>
+            );
+          })}
         </View>
 
-        <View className="flex-row mb-4">
-          <Text className="font-bold text-white mr-2.5 w-6">3.</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            <Text className="font-bold text-white">Connect to Coin Escape</Text> – Open the Coin Escape app, sign up or log in, and connect your exchange by entering your:
-            {'\n'}  • API Key
-            {'\n'}  • Secret Key
-            {'\n'}  • Passphrase (if required)
-            {'\n\n'}Some exchanges may require you to connect to a UK VPN before creating or using your API credentials.
-          </Text>
+        {/* Tip (existing) */}
+        <View style={styles.tipCard}>
+          <ThemedText style={styles.tipIcon}>💡</ThemedText>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
+            Tip: only enable Read and Withdraw permissions on your API keys — never Trading or
+            Futures. Whitelisting your withdrawal address is your strongest defence.
+          </ThemedText>
         </View>
-
-        <View className="flex-row mb-4">
-          <Text className="font-bold text-white mr-2.5 w-6">4.</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            <Text className="font-bold text-white">Verify Your Assets</Text> – Ensure your funds are held in your exchange's <Text className="font-bold text-white">Funding</Text> or <Text className="font-bold text-white">Trading</Text> account. Assets stored in Web3 wallets or external wallets may not appear in Coin Escape.
-          </Text>
-        </View>
-
-        <View className="flex-row mb-4">
-          <Text className="font-bold text-white mr-2.5 w-6">5.</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            <Text className="font-bold text-white">Configure Withdrawals</Text> – Enter your withdrawal address and select the correct blockchain network. Always double‑check the destination address and network before proceeding.
-          </Text>
-        </View>
-
-        <View className="flex-row mb-4">
-          <Text className="font-bold text-white mr-2.5 w-6">6.</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            <Text className="font-bold text-white">Withdraw Your Funds</Text> – Once your setup is complete, tap <Text className="font-bold text-white">Real Withdrawal</Text> to securely withdraw your supported tokens.
-          </Text>
-        </View>
-
-        <Text className="text-2xl font-semibold text-white mt-6 mb-4">Security</Text>
-
-        <View className="flex-row mb-2.5">
-          <Text className="text-base text-gray-400 mr-2.5 w-4">•</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            Coin Escape only requires <Text className="font-bold text-white">Read</Text> and <Text className="font-bold text-white">Withdraw</Text> permissions.
-          </Text>
-        </View>
-        <View className="flex-row mb-2.5">
-          <Text className="text-base text-gray-400 mr-2.5 w-4">•</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            Never enable unnecessary API permissions unless specifically instructed.
-          </Text>
-        </View>
-        <View className="flex-row mb-2.5">
-          <Text className="text-base text-gray-400 mr-2.5 w-4">•</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            Keep your API Secret and Passphrase secure. Your exchange may only display them once.
-          </Text>
-        </View>
-        <View className="flex-row mb-2.5">
-          <Text className="text-base text-gray-400 mr-2.5 w-4">•</Text>
-          <Text className="flex-1 text-base leading-6 text-gray-300">
-            Always verify withdrawal addresses and blockchain networks before confirming any transaction.
-          </Text>
-        </View>
-
-        <Text className="text-base italic text-gray-500 mt-6 mb-10 leading-6">
-          Coin Escape is designed to make connecting your exchange accounts simple, giving you a fast and convenient way to manage and withdraw your assets from one place.
-        </Text>
       </ScrollView>
-    </SafeAreaView>
+    </Screen>
   );
 }
+
+const styles = StyleSheet.create({
+  content: { padding: Spacing.three, gap: Spacing.two, paddingBottom: Spacing.six },
+  flex: { flex: 1 },
+  header: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three, marginBottom: Spacing.one },
+  title: { fontSize: 24, lineHeight: 28 },
+
+  // --- General guide styles ---
+  generalCard: { padding: Spacing.three, gap: Spacing.two },
+  generalTitle: { fontSize: 22, fontWeight: '700' },
+  generalIntro: { lineHeight: 18 },
+  generalHeading: { fontSize: 16, fontWeight: '700', marginTop: Spacing.two },
+  generalFooter: { fontStyle: 'italic', marginTop: Spacing.two },
+
+  stepRow: { flexDirection: 'row', gap: Spacing.two, alignItems: 'flex-start' },
+  stepNum: { fontWeight: '700', width: 24 },
+  stepText: { flex: 1, lineHeight: 18 },
+
+  bulletRow: { flexDirection: 'row', gap: Spacing.two, alignItems: 'flex-start' },
+  bullet: { width: 16, textAlign: 'center' },
+  bulletText: { flex: 1, lineHeight: 18 },
+  bold: { fontWeight: '700' },
+
+  // --- Exchange list styles (existing) ---
+  sectionLabel: { letterSpacing: 1, fontWeight: '700', marginTop: Spacing.two },
+  group: { gap: Spacing.two },
+  pressed: { opacity: 0.7 },
+  row: { flexDirection: 'row', alignItems: 'center', gap: Spacing.three },
+  exchangeName: { fontSize: 16, fontWeight: '700', marginBottom: 2 },
+  chevron: { fontSize: 24, color: Brand.textMuted },
+  tipCard: {
+    flexDirection: 'row',
+    gap: Spacing.two,
+    backgroundColor: Brand.accentSoft,
+    borderRadius: Radius.md,
+    padding: Spacing.three,
+    marginTop: Spacing.two,
+    alignItems: 'flex-start',
+  },
+  tipIcon: { fontSize: 16 },
+});
