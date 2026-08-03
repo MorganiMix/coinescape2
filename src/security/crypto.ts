@@ -46,6 +46,22 @@ export function deriveKey(password: string, salt: Uint8Array): Uint8Array {
   });
 }
 
+/**
+ * Derive a 256-bit AES key from a password + salt using PBKDF2-SHA256
+ * with a custom iteration count. Used for verifying old password hashes
+ * during the upgrade process.
+ */
+export function deriveKeyWithIterations(
+  password: string,
+  salt: Uint8Array,
+  iterations: number
+): Uint8Array {
+  return pbkdf2(sha256, utf8ToBytes(password), salt, {
+    c: iterations,
+    dkLen: KEY_LEN,
+  });
+}
+
 /** Shape of an AES-256-GCM ciphertext, hex-encoded for JSON-safe storage. */
 export interface EncryptedData {
   /** AES-256-GCM */
