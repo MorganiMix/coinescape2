@@ -3,11 +3,11 @@
  *
  * Implements Requirement 8 (Credential Security):
  *  - AES-256-GCM authenticated encryption for API secrets / passphrases.
- *  - PBKDF2-SHA256 key derivation from the user password (100,000 iterations).
+ *  - PBKDF2-SHA256 key derivation from the user password (600,000 iterations).
  *  - CSPRNG salt / IV generation via expo-crypto.
  *
  * All routines are pure JS (@noble/*) so there is no native linking and the
- * exact named algorithms (AES-256-GCM, PBKDF2-100k) are guaranteed regardless
+ * exact named algorithms (AES-256-GCM, PBKDF2-600k) are guaranteed regardless
  * of platform WebCrypto availability.
  */
 import { gcm } from '@noble/ciphers/aes';
@@ -16,8 +16,8 @@ import { pbkdf2 } from '@noble/hashes/pbkdf2';
 import { sha256 } from '@noble/hashes/sha2';
 import * as ExpoCrypto from 'expo-crypto';
 
-/** PBKDF2 iteration count mandated by Requirement 8.3. */
-export const PBKDF2_ITERATIONS = 100_000;
+/** PBKDF2 iteration count mandated by Requirement 8.3 (OWASP 600,000+). */
+export const PBKDF2_ITERATIONS = 600_000;
 /** AES-256 key length in bytes. */
 const KEY_LEN = 32;
 /** 128-bit salt. */
