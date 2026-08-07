@@ -2,7 +2,7 @@
   "expo": {
     "name": "coinescape",
     "slug": "coinescape",
-    "version": "1.2.2",
+    "version": "1.3.0",
     "orientation": "portrait",
     "icon": "./assets/images/icon.png",
     "scheme": "coinescape",
@@ -40,7 +40,21 @@
           }
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      "react-native-quick-crypto",
+      "expo-build-properties",
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Coin Escape uses the camera only to scan a profile-transfer QR code."
+        }
+      ],
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Coin Escape uses Face ID to unlock your local vault."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

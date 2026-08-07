@@ -3,13 +3,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, BackHandler, LayoutAnimation, Platform, Pressable, ScrollView, StyleSheet, UIManager, View } from 'react-native';
 
 import { AssetBadge } from '@/components/AssetBadge';
-import { ExchangeSelector } from '@/components/ExchangeSelector';
+import { ChainPicker } from '@/components/ChainPicker';
 import { ExchangeConnectForm } from '@/components/ExchangeConnectForm';
+import { ExchangeSelector } from '@/components/ExchangeSelector';
 import { IpChangeWarning } from '@/components/IpChangeWarning';
 import { NavMenu } from '@/components/NavMenu';
-import { setLeaveGuard } from '@/components/navGuard';
-import { ChainPicker } from '@/components/ChainPicker';
 import { SavedAddressPicker } from '@/components/SavedAddressPicker';
+import { setLeaveGuard } from '@/components/navGuard';
 import { ThemedText } from '@/components/themed-text';
 import { Card } from '@/components/ui/Card';
 import { GradientButton } from '@/components/ui/GradientButton';
@@ -17,8 +17,8 @@ import { Screen } from '@/components/ui/Screen';
 import { StatusDot } from '@/components/ui/StatusDot';
 import { TextField } from '@/components/ui/TextField';
 import { Brand, Radius, Spacing } from '@/constants/theme';
-import { ASSET_META, ConnectionStatus, ExchangeId } from '@/domain/types';
 import { EXCHANGE_GUIDES } from '@/domain/exchangeGuides';
+import { ASSET_META, ConnectionStatus, ExchangeId } from '@/domain/types';
 import { hasAddressBook, hasChainSelection, hasWalletName } from '@/exchange';
 import { useAppStore } from '@/store/AppStore';
 

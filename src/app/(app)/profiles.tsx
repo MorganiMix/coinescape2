@@ -1,5 +1,7 @@
-import { useMemo, useState } from 'react';
-import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, TextInput, View } from 'react-native';
+import { CameraView, useCameraPermissions } from 'expo-camera';
+import { useMemo, useRef, useState } from 'react';
+import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import QRCode from 'react-native-qrcode-svg';
 
 import { NavMenu } from '@/components/NavMenu';
 import { ThemedText } from '@/components/themed-text';
@@ -8,6 +10,7 @@ import { GradientButton } from '@/components/ui/GradientButton';
 import { Screen } from '@/components/ui/Screen';
 import { TextField } from '@/components/ui/TextField';
 import { Brand, Radius, Spacing } from '@/constants/theme';
+import { peekTransferName } from '@/security';
 import { useAppStore } from '@/store/AppStore';
 
 export default function ProfilesScreen() {
@@ -35,15 +38,21 @@ export default function ProfilesScreen() {
   const [createName, setCreateName] = useState('');
   const [creating, setCreating] = useState(false);
 
-  // Export
-  const [exportPassword, setExportPassword] = useState('');
-  const [exportText, setExportText] = useState('');
+  // Export → QR
+  const [exportOpen, setExportOpen] = useState(false);
+  const [exportPin, setExportPin] = useState('');
+  const [exportQr, setExportQr] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  // Import
-  const [importText, setImportText] = useState('');
-  const [importPassword, setImportPassword] = useState('');
+  // Import → scan QR, then enter PIN
+  const [permission, requestPermission] = useCameraPermissions();
+  const [scanOpen, setScanOpen] = useState(false);
+  const [scannedText, setScannedText] = useState<string | null>(null);
+  const [scannedName, setScannedName] = useState<string | null>(null);
+  const [importPin, setImportPin] = useState('');
   const [importing, setImporting] = useState(false);
+  // Guard against onBarcodeScanned firing repeatedly for the same frame.
+  const scanLock = useRef(false);
 
   const activeProfile = useMemo(
     () => profiles.find((p) => p.id === activeProfileId) ?? null,
@@ -141,30 +150,81 @@ export default function ProfilesScreen() {
     }
   };
 
-  const handleExport = async () => {
-    if (exportPassword.length === 0) {
-      Alert.alert('Password required', 'Enter your account password to encrypt the export.');
+  // ---- Export → QR ----
+
+  const openExport = () => {
+    setExportPin('');
+    setExportQr(null);
+    setExportOpen(true);
+  };
+
+  const closeExport = () => {
+    setExportOpen(false);
+    setExportPin('');
+    setExportQr(null);
+  };
+
+  const handleGenerateQr = async () => {
+    if (exportPin.length < 4) {
+      Alert.alert('PIN too short', 'Choose a transfer PIN of at least 4 digits.');
       return;
     }
     setExporting(true);
-    setExportText('');
     try {
-      const result = await exportActiveProfile(exportPassword);
+      // Biometric re-auth happens inside exportActiveProfile.
+      const result = await exportActiveProfile(exportPin);
       if (!result.ok || !result.text) {
         Alert.alert('Export failed', result.error ?? 'Could not export this profile.');
         return;
       }
-      setExportText(result.text);
-      setExportPassword('');
+      setExportQr(result.text);
     } finally {
       setExporting(false);
     }
   };
 
+  // ---- Import → scan QR, then enter PIN ----
+
+  const openScanner = async () => {
+    if (!permission?.granted) {
+      const res = await requestPermission();
+      if (!res.granted) {
+        Alert.alert(
+          'Camera needed',
+          'Allow camera access to scan a profile QR code. You can enable it in Settings.'
+        );
+        return;
+      }
+    }
+    scanLock.current = false;
+    setScannedText(null);
+    setScannedName(null);
+    setImportPin('');
+    setScanOpen(true);
+  };
+
+  const handleBarcodeScanned = ({ data }: { data: string }) => {
+    if (scanLock.current) return;
+    scanLock.current = true;
+    // Read the (non-secret) profile name embedded in the payload so we can show
+    // it before asking for the PIN. If it doesn't parse, it's not our QR.
+    const name = peekTransferName(data);
+    if (!name) {
+      Alert.alert('Not a Coin Escape code', 'That QR code is not a Coin Escape profile transfer.', [
+        { text: 'OK', onPress: () => (scanLock.current = false) },
+      ]);
+      return;
+    }
+    setScannedText(data);
+    setScannedName(name);
+    setScanOpen(false);
+  };
+
   const runImport = async (overwriteId?: string) => {
+    if (!scannedText) return;
     setImporting(true);
     try {
-      const result = await importProfileFromText(importText, importPassword, overwriteId);
+      const result = await importProfileFromText(scannedText, importPin, overwriteId);
       if (result.needsSlot) {
         // All slots full — ask which to overwrite.
         Alert.alert(
@@ -184,8 +244,9 @@ export default function ProfilesScreen() {
         Alert.alert('Import failed', result.error ?? 'Could not import this profile.');
         return;
       }
-      setImportText('');
-      setImportPassword('');
+      setScannedText(null);
+      setScannedName(null);
+      setImportPin('');
       Alert.alert('Imported', 'Profile imported and made active.');
     } finally {
       setImporting(false);
@@ -193,12 +254,12 @@ export default function ProfilesScreen() {
   };
 
   const handleImport = () => {
-    if (importText.trim().length === 0) {
-      Alert.alert('Nothing to import', 'Paste an exported profile file first.');
+    if (!scannedText) {
+      Alert.alert('Nothing to import', 'Scan a profile QR code first.');
       return;
     }
-    if (importPassword.length === 0) {
-      Alert.alert('Password required', 'Enter the username’s password the file was exported with.');
+    if (importPin.length < 4) {
+      Alert.alert('PIN required', 'Enter the transfer PIN the QR code was created with.');
       return;
     }
     runImport();
@@ -309,91 +370,67 @@ export default function ProfilesScreen() {
           />
         )}
 
-        {/* Export */}
+        {/* Export → QR */}
         <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
-          EXPORT ACTIVE PROFILE
+          TRANSFER ACTIVE PROFILE
         </ThemedText>
         <Card style={styles.group}>
           <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-            Exports “{activeProfile?.name ?? 'the active profile'}” as an encrypted file. The API
-            keys are encrypted with your username + password — only that exact combination can
-            decrypt them on import. Re-enter your account password to confirm.
+            Shows “{activeProfile?.name ?? 'the active profile'}” as an encrypted QR code. You set a
+            one-time transfer PIN and confirm with your device — the receiving phone scans the code
+            and enters the same PIN. The PIN is the only thing that can decrypt it, so share it
+            separately.
           </ThemedText>
-          <TextField
-            label="Account password"
-            placeholder="Your account password"
-            secureToggle
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={exportPassword}
-            onChangeText={setExportPassword}
-          />
           <GradientButton
-            label={exporting ? 'Encrypting…' : 'Generate export'}
+            label="Show transfer QR"
             variant="accent"
-            disabled={exporting}
-            onPress={handleExport}
+            onPress={openExport}
           />
-          {exportText.length > 0 && (
-            <>
-              <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-                Long-press the text below to select all and copy it, then save it somewhere safe.
-              </ThemedText>
-              {/*
-                Keep the input EDITABLE so Android allows long-press selection
-                (a non-editable TextInput is not focusable/selectable on Android),
-                but swallow edits so the exported text can't actually be changed.
-                Tapping selects-all and hides the soft keyboard.
-              */}
-              <TextInput
-                style={styles.codeBox}
-                value={exportText}
-                multiline
-                onChangeText={() => {}}
-                selectTextOnFocus
-                contextMenuHidden={false}
-                showSoftInputOnFocus={false}
-                scrollEnabled
-              />
-            </>
-          )}
         </Card>
 
-        {/* Import */}
+        {/* Import → scan */}
         <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
-          IMPORT PROFILE
+          IMPORT FROM QR
         </ThemedText>
         <Card style={styles.group}>
           <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-            Paste an exported profile below and enter the username + password it was exported with.
+            Scan a transfer QR from another phone, then enter the transfer PIN it was created with.
             It imports into a free slot, or asks which profile to overwrite when all {maxProfiles}{' '}
             are in use.
           </ThemedText>
-          <TextInput
-            style={styles.codeBox}
-            value={importText}
-            onChangeText={setImportText}
-            multiline
-            placeholder="Paste exported profile JSON here…"
-            placeholderTextColor={Brand.textMuted}
-            autoCapitalize="none"
-            autoCorrect={false}
-          />
-          <TextField
-            label="Password (the file’s export password)"
-            placeholder="Password the file was exported with"
-            secureToggle
-            autoCapitalize="none"
-            autoCorrect={false}
-            value={importPassword}
-            onChangeText={setImportPassword}
-          />
+          {scannedName && (
+            <View style={styles.scannedBox}>
+              <ThemedText type="small" themeColor="textSecondary">
+                Scanned profile
+              </ThemedText>
+              <ThemedText style={styles.profileName}>{scannedName}</ThemedText>
+            </View>
+          )}
           <GradientButton
-            label={importing ? 'Decrypting…' : 'Import profile'}
-            variant="accent"
-            disabled={importing}
-            onPress={handleImport}
+            label={scannedText ? 'Rescan QR' : 'Scan QR code'}
+            variant={scannedText ? 'outline' : 'accent'}
+            onPress={openScanner}
           />
+          {scannedText && (
+            <>
+              <TextField
+                label="Transfer PIN"
+                placeholder="PIN the QR was created with"
+                secureToggle
+                keyboardType="number-pad"
+                autoCapitalize="none"
+                autoCorrect={false}
+                value={importPin}
+                onChangeText={setImportPin}
+              />
+              <GradientButton
+                label={importing ? 'Decrypting…' : 'Import profile'}
+                variant="accent"
+                disabled={importing}
+                onPress={handleImport}
+              />
+            </>
+          )}
         </Card>
       </ScrollView>
 
@@ -438,6 +475,93 @@ export default function ProfilesScreen() {
           </View>
         </KeyboardAvoidingView>
       </Modal>
+
+      {/* Export → QR modal */}
+      <Modal
+        visible={exportOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={closeExport}>
+        <KeyboardAvoidingView
+          style={styles.modalBackdrop}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={closeExport} />
+          <View style={styles.modalCard}>
+            <ThemedText style={styles.modalTitle}>Transfer “{activeProfile?.name ?? 'Profile'}”</ThemedText>
+            {exportQr ? (
+              <>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
+                  Scan this on the other phone, then enter the transfer PIN there. The code expires
+                  when you close this screen.
+                </ThemedText>
+                <View style={styles.qrWrap}>
+                  <QRCode value={exportQr} size={240} backgroundColor="white" />
+                </View>
+                <View style={styles.modalActions}>
+                  <Pressable onPress={closeExport} hitSlop={6}>
+                    <ThemedText style={{ color: Brand.accent, fontWeight: '700' }}>Done</ThemedText>
+                  </Pressable>
+                </View>
+              </>
+            ) : (
+              <>
+                <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
+                  Choose a one-time transfer PIN (share it with the other phone separately). You’ll
+                  confirm with your device before the code appears.
+                </ThemedText>
+                <TextField
+                  label="Transfer PIN"
+                  placeholder="At least 4 digits"
+                  secureToggle
+                  keyboardType="number-pad"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  value={exportPin}
+                  onChangeText={setExportPin}
+                />
+                <View style={styles.modalActions}>
+                  <Pressable onPress={closeExport} hitSlop={6} disabled={exporting}>
+                    <ThemedText type="small" themeColor="textSecondary">
+                      Cancel
+                    </ThemedText>
+                  </Pressable>
+                  <Pressable onPress={handleGenerateQr} hitSlop={6} disabled={exporting}>
+                    <ThemedText style={{ color: Brand.accent, fontWeight: '700' }}>
+                      {exporting ? 'Preparing…' : 'Show QR'}
+                    </ThemedText>
+                  </Pressable>
+                </View>
+              </>
+            )}
+          </View>
+        </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Import → camera scanner modal */}
+      <Modal
+        visible={scanOpen}
+        animationType="slide"
+        onRequestClose={() => setScanOpen(false)}>
+        <View style={styles.scannerRoot}>
+          {permission?.granted && (
+            <CameraView
+              style={StyleSheet.absoluteFill}
+              facing="back"
+              onBarcodeScanned={handleBarcodeScanned}
+              barcodeScannerSettings={{ barcodeTypes: ['qr'] }}
+            />
+          )}
+          <View style={styles.scannerOverlay} pointerEvents="box-none">
+            <View style={styles.scannerFrame} />
+            <ThemedText style={styles.scannerHint}>
+              Point at the transfer QR on the other phone
+            </ThemedText>
+            <Pressable style={styles.scannerCancel} onPress={() => setScanOpen(false)} hitSlop={8}>
+              <ThemedText style={{ color: Brand.text, fontWeight: '700' }}>Cancel</ThemedText>
+            </Pressable>
+          </View>
+        </View>
+      </Modal>
     </Screen>
   );
 }
@@ -469,18 +593,44 @@ const styles = StyleSheet.create({
   },
   activeBadgeText: { fontSize: 10, fontWeight: '800', color: Brand.accent, letterSpacing: 1 },
   newBtn: { marginTop: Spacing.one },
-  codeBox: {
-    minHeight: 120,
-    maxHeight: 220,
+  scannedBox: {
     backgroundColor: Brand.inputBg,
     borderRadius: Radius.md,
     borderWidth: 1,
     borderColor: Brand.cardBorder,
-    color: Brand.text,
-    fontSize: 12,
-    fontFamily: 'Courier',
     padding: Spacing.three,
-    textAlignVertical: 'top',
+    gap: 2,
+  },
+  qrWrap: {
+    alignSelf: 'center',
+    backgroundColor: 'white',
+    padding: Spacing.three,
+    borderRadius: Radius.md,
+    marginVertical: Spacing.two,
+  },
+  scannerRoot: { flex: 1, backgroundColor: '#000' },
+  scannerOverlay: {
+    ...StyleSheet.absoluteFill,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: Spacing.four,
+  },
+  scannerFrame: {
+    width: 240,
+    height: 240,
+    borderWidth: 3,
+    borderColor: Brand.accent,
+    borderRadius: Radius.lg,
+    backgroundColor: 'transparent',
+  },
+  scannerHint: { color: Brand.text, textAlign: 'center', paddingHorizontal: Spacing.four },
+  scannerCancel: {
+    position: 'absolute',
+    bottom: Spacing.six,
+    paddingVertical: Spacing.three,
+    paddingHorizontal: Spacing.five,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: Radius.lg,
   },
   modalBackdrop: {
     flex: 1,

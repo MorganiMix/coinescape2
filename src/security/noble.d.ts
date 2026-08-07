@@ -16,6 +16,9 @@ declare module '@noble/ciphers/utils' {
 declare module '@noble/hashes/pbkdf2' {
   export * from '@noble/hashes/pbkdf2.js';
 }
+declare module '@noble/hashes/argon2' {
+  export * from '@noble/hashes/argon2.js';
+}
 declare module '@noble/hashes/sha2' {
   export * from '@noble/hashes/sha2.js';
 }

@@ -203,7 +203,7 @@ export default function PanicScreen() {
                   type="small"
                   themeColor="textSecondary"
                   style={{ color: ex.isConnected ? Brand.success : Brand.textMuted }}>
-                  {ex.isConnected ? ex.apiKeyMasked ?? 'Connected' : 'Not linked'}
+                  {ex.isConnected ? ex.apiKeyMasked ?? 'Connected' : 'Tap here to link'}
                 </ThemedText>
                 <ThemedText style={styles.rowChevron}>›</ThemedText>
               </View>

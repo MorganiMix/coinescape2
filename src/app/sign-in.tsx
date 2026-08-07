@@ -1,5 +1,5 @@
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -9,40 +9,133 @@ import {
   View,
 } from 'react-native';
 
+import { DisclaimerGate } from '@/components/DisclaimerGate';
 import { ThemedText } from '@/components/themed-text';
 import { GradientButton } from '@/components/ui/GradientButton';
 import { Logo } from '@/components/ui/Logo';
 import { Screen } from '@/components/ui/Screen';
 import { TextField } from '@/components/ui/TextField';
 import { Brand, Spacing } from '@/constants/theme';
-import { PASSWORD_RULES } from '@/security';
+import { acceptDisclaimer, hasAcceptedDisclaimer, NoDeviceLockError, VaultAuthError } from '@/security';
 import { useAppStore } from '@/store/AppStore';
+
+type Mode = 'unlock' | 'enroll' | 'migrate';
 
 export default function SignInScreen() {
   const router = useRouter();
-  const { hasAccount, authChecked, login, register } = useAppStore();
+  const { hasAccount, needsMigration, authChecked, unlock, enroll, migrate } = useAppStore();
 
-  // First launch (no local account) → create-account mode; otherwise login.
-  const isCreating = !hasAccount;
+  // Decide which flow to present:
+  //  - needsMigration → a legacy password account exists; migrate it once.
+  //  - no account     → first run; enrol the biometric vault.
+  //  - account exists → unlock with device authentication.
+  const mode: Mode = needsMigration ? 'migrate' : hasAccount ? 'unlock' : 'enroll';
 
-  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [noLock, setNoLock] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  const canSubmit = useMemo(() => {
-    if (busy) return false;
-    if (username.trim().length < 3 || password.length === 0) return false;
-    if (isCreating && confirm.length === 0) return false;
-    return true;
-  }, [busy, username, password, confirm, isCreating]);
+  // First-run legal disclaimer. `null` = still loading the persisted flag so we
+  // don't flash the gate for returning users. Only enrolment is gated.
+  const [disclaimerAccepted, setDisclaimerAccepted] = useState<boolean | null>(null);
 
-  // While the AppStore is detecting a fresh install (iOS) and reading the
-  // keychain, render a quiet loader so the UI doesn't flash between
-  // "create-account" and "login" on first launch. Kept below the hooks so
-  // the rules-of-hooks ordering is preserved across renders.
-  if (!authChecked) {
+  const goToApp = () => router.replace('/(app)/panic');
+
+  // Load the persisted disclaimer acceptance once.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const accepted = await hasAcceptedDisclaimer();
+      if (!cancelled) setDisclaimerAccepted(accepted);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const handleAgreeDisclaimer = async () => {
+    await acceptDisclaimer();
+    setDisclaimerAccepted(true);
+  };
+
+  // On an existing-account device, trigger the biometric prompt automatically
+  // as soon as the screen is ready — no button tap needed for the common path.
+  useEffect(() => {
+    if (!authChecked || mode !== 'unlock' || busy) return;
+    void runUnlock();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authChecked, mode]);
+
+  const mapError = (e: unknown): { message: string; noLock: boolean } => {
+    if (e instanceof NoDeviceLockError) {
+      return { message: e.message, noLock: true };
+    }
+    if (e instanceof VaultAuthError) {
+      return { message: 'Authentication cancelled. Tap to try again.', noLock: false };
+    }
+    return {
+      message: e instanceof Error ? e.message : 'Authentication failed',
+      noLock: false,
+    };
+  };
+
+  const runUnlock = async () => {
+    setError(null);
+    setNoLock(false);
+    setBusy(true);
+    try {
+      await unlock();
+      goToApp();
+    } catch (e) {
+      const m = mapError(e);
+      setError(m.message);
+      setNoLock(m.noLock);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runEnroll = async () => {
+    setError(null);
+    setNoLock(false);
+    setBusy(true);
+    try {
+      await enroll();
+      goToApp();
+    } catch (e) {
+      const m = mapError(e);
+      setError(m.message);
+      setNoLock(m.noLock);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const runMigrate = async () => {
+    setError(null);
+    setNoLock(false);
+    setBusy(true);
+    try {
+      await migrate(password);
+      setPassword('');
+      goToApp();
+    } catch (e) {
+      const m = mapError(e);
+      setError(m.message);
+      setNoLock(m.noLock);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const canMigrate = useMemo(() => !busy && password.length > 0, [busy, password]);
+
+  // While the AppStore detects a fresh install and reads the keychain — and
+  // while we load the persisted disclaimer flag — render a quiet loader so the
+  // UI doesn't flash between modes on first launch. Kept below the hooks so
+  // rules-of-hooks ordering is preserved.
+  if (!authChecked || disclaimerAccepted === null) {
     return (
       <Screen>
         <View style={styles.loadingWrap}>
@@ -52,28 +145,25 @@ export default function SignInScreen() {
     );
   }
 
-  const handleSubmit = async () => {
-    setError(null);
+  // First sign-up: the user MUST accept the risk disclaimer before enrolling a
+  // vault. Returning users (unlock) and legacy migrations are not re-gated.
+  if (mode === 'enroll' && !disclaimerAccepted) {
+    return <DisclaimerGate onAgree={handleAgreeDisclaimer} />;
+  }
 
-    if (isCreating && password !== confirm) {
-      setError('Passwords do not match');
-      return;
-    }
+  const title =
+    mode === 'migrate'
+      ? 'Upgrade to Biometric Sign-In'
+      : mode === 'enroll'
+        ? 'Set Up Coin Escape'
+        : 'Unlock Coin Escape';
 
-    setBusy(true);
-    try {
-      if (isCreating) {
-        await register(username, password);
-      } else {
-        await login(username, password);
-      }
-      router.replace('/(app)/panic');
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Authentication failed');
-    } finally {
-      setBusy(false);
-    }
-  };
+  const subtitle =
+    mode === 'migrate'
+      ? 'Enter your existing password once. We’ll re-secure your vault with Face ID / Touch ID and your device passcode.'
+      : mode === 'enroll'
+        ? 'Coin Escape is protected by your device biometrics and passcode. No passwords to remember.'
+        : 'Confirm with Face ID, Touch ID, or your device passcode to continue.';
 
   return (
     <Screen>
@@ -89,62 +179,39 @@ export default function SignInScreen() {
           </View>
 
           <ThemedText type="subtitle" style={styles.title}>
-            {isCreating ? 'Create Your Vault' : 'Sign In to Coin Escape'}
+            {title}
           </ThemedText>
           <ThemedText themeColor="textSecondary" style={styles.subtitle}>
-            {isCreating
-              ? 'Set a username and password. Credentials are stored only on this device.'
-              : 'Secure access to your emergency withdrawal vault'}
+            {subtitle}
           </ThemedText>
 
           <View style={styles.form}>
-            <TextField
-              label="Username"
-              placeholder={isCreating ? 'Choose a username' : 'Enter your username'}
-              autoCapitalize="none"
-              autoCorrect={false}
-              autoComplete="username"
-              textContentType="username"
-              value={username}
-              onChangeText={(t) => {
-                setUsername(t);
-                setError(null);
-              }}
-            />
-            <TextField
-              label="Password"
-              placeholder={isCreating ? 'Create a password' : 'Enter your password'}
-              secureToggle
-              autoCapitalize="none"
-              autoComplete={isCreating ? 'new-password' : 'current-password'}
-              textContentType={isCreating ? 'newPassword' : 'password'}
-              value={password}
-              onChangeText={(t) => {
-                setPassword(t);
-                setError(null);
-              }}
-            />
-            {isCreating && (
+            {mode === 'migrate' && (
               <TextField
-                label="Confirm password"
-                placeholder="Re-enter your password"
+                label="Current password"
+                placeholder="Enter your existing password"
                 secureToggle
                 autoCapitalize="none"
-                value={confirm}
+                autoComplete="current-password"
+                textContentType="password"
+                value={password}
                 onChangeText={(t) => {
-                  setConfirm(t);
+                  setPassword(t);
                   setError(null);
                 }}
               />
             )}
 
-            {isCreating && (
-              <ThemedText type="small" style={styles.hint}>
-                At least {PASSWORD_RULES.minLength} characters, with letters and numbers.
-              </ThemedText>
+            {noLock && (
+              <View style={styles.warnBox}>
+                <ThemedText type="small" style={styles.warnText}>
+                  Coin Escape needs a device lock. Set up a passcode, Face ID, or
+                  Touch ID in your phone{'’'}s settings, then reopen the app.
+                </ThemedText>
+              </View>
             )}
 
-            {error && (
+            {error && !noLock && (
               <View style={styles.errorBox}>
                 <ThemedText type="small" style={styles.errorText}>
                   {error}
@@ -152,19 +219,42 @@ export default function SignInScreen() {
               </View>
             )}
 
-            <GradientButton
-              label={isCreating ? 'Create Vault & Continue' : 'Sign In'}
-              variant="accent"
-              disabled={!canSubmit}
-              loading={busy}
-              onPress={handleSubmit}
-            />
+            {mode === 'unlock' && (
+              <GradientButton
+                label={busy ? 'Authenticating…' : 'Unlock with Device'}
+                variant="accent"
+                disabled={busy}
+                loading={busy}
+                onPress={runUnlock}
+              />
+            )}
+
+            {mode === 'enroll' && (
+              <GradientButton
+                label="Enable & Continue"
+                variant="accent"
+                disabled={busy}
+                loading={busy}
+                onPress={runEnroll}
+              />
+            )}
+
+            {mode === 'migrate' && (
+              <GradientButton
+                label="Upgrade & Continue"
+                variant="accent"
+                disabled={!canMigrate}
+                loading={busy}
+                onPress={runMigrate}
+              />
+            )}
           </View>
 
           <View style={styles.footer}>
             <ThemedText type="small" themeColor="textSecondary" style={styles.footerText}>
-              Your username and password never leave this device. There is no
-              account recovery — keep them safe.
+              Your vault is encrypted on this device and gated by your biometrics.
+              There is no account recovery — losing device access means losing the
+              vault.
             </ThemedText>
           </View>
         </ScrollView>
@@ -187,7 +277,13 @@ const styles = StyleSheet.create({
   title: { textAlign: 'center', fontSize: 26, lineHeight: 32 },
   subtitle: { textAlign: 'center', marginBottom: Spacing.four },
   form: { gap: Spacing.three },
-  hint: { marginLeft: 2, marginTop: -Spacing.one, color: Brand.textMuted },
+  warnBox: {
+    backgroundColor: Brand.dangerSoft,
+    borderRadius: 8,
+    paddingVertical: Spacing.two,
+    paddingHorizontal: Spacing.three,
+  },
+  warnText: { color: Brand.danger },
   errorBox: {
     backgroundColor: Brand.dangerSoft,
     borderRadius: 8,

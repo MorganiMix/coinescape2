@@ -1,193 +1,180 @@
 /**
- * Local-only user authentication.
+ * Local-only, PASSWORDLESS vault authentication.
  *
- * Requirement 9 (User Authentication & Session Management):
- *  - The account (username + password verifier) lives entirely on-device in
- *    the OS secure store. No network, no server.
- *  - The password is NEVER stored. We store a PBKDF2-SHA256 verifier (a hash
- *    derived from the password + a random salt) and compare in constant time.
- *  - A successful login also derives the AES-256-GCM master key (separate
- *    salt) used by the credential vault; that key is returned to the caller to
- *    hold in memory only for the session (Requirement 8.6).
+ * Requirement 9 (revisited — biometric/passcode model):
+ *  - There is no username/password. Access to the vault is gated by the
+ *    device's own authentication (Face ID / Touch ID → passcode) via the
+ *    biometric-protected master key in {@link module:security/vaultKey}.
+ *  - The AES-256-GCM master key is a random value unlocked by device auth and
+ *    held in memory only for the session (Requirement 8.6).
+ *  - A tiny non-secret marker records that the vault has been enrolled on this
+ *    device (so we can show "unlock" vs "set up").
  *
- * Requirement 9.6/9.7: failed attempts are logged (without the password) and a
- * minimum password strength is enforced at registration.
+ * Legacy (v1) password accounts are migrated on first launch — see
+ * {@link migrateLegacyAccount}.
  */
+import { EncryptedData, decryptString, deriveKey, encryptString, hexToBytes } from './crypto';
 import {
-  PBKDF2_ITERATIONS,
-  bytesToHex,
-  deriveKey,
-  deriveKeyWithIterations,
-  hexToBytes,
-  newSalt,
-} from './crypto';
+  StoredCredentials,
+  listStoredCredentialExchanges,
+  readStoredCredentialRecord,
+  writeStoredCredentialRecord,
+} from './credentialVault';
 import { deleteItem, getJSON, setJSON } from './secureStore';
+import { createMasterKey, deleteMasterKey, unlockMasterKey, writeMasterKey } from './vaultKey';
 
-const ACCOUNT_KEY = 'coinescape.account.v1';
+/** Non-secret marker: the vault has been enrolled on this device. */
+const VAULT_MARKER_KEY = 'coinescape.vault.v2';
+/** Legacy v1 password account (pre-biometric). Read-only, for migration. */
+const LEGACY_ACCOUNT_KEY = 'coinescape.account.v1';
+/** Legacy profile snapshot key builder (mirrors profileStore). */
+const legacySnapshotKey = (id: string) => `coinescape.profile.${id}.snapshot.v1`;
+const PROFILE_REGISTRY_KEY = 'coinescape.profiles.v1';
 
-interface StoredAccount {
-  username: string;
-  /** salt for the password verifier (hex) */
-  pwSalt: string;
-  /** PBKDF2 verifier of the password (hex) — NOT the password itself */
-  pwVerifier: string;
-  /** independent salt used to derive the credential-encryption master key */
-  keySalt: string;
-  iterations: number;
+interface VaultMarker {
   createdAt: number;
 }
 
-export interface PasswordRules {
-  minLength: number;
-}
-
-export const PASSWORD_RULES: PasswordRules = { minLength: 8 };
-
 export interface AuthSuccess {
-  username: string;
   /** AES-256-GCM master key for the credential vault — keep in memory only. */
   encryptionKey: Uint8Array;
 }
 
-/** Returns true once a local account has been created on this device. */
+/** True once the biometric vault has been enrolled on this device. */
 export async function hasAccount(): Promise<boolean> {
-  return (await getJSON<StoredAccount>(ACCOUNT_KEY)) !== null;
+  return (await getJSON<VaultMarker>(VAULT_MARKER_KEY)) !== null;
 }
 
-export async function getUsername(): Promise<string | null> {
-  const acct = await getJSON<StoredAccount>(ACCOUNT_KEY);
-  return acct?.username ?? null;
-}
-
-/** Enforces Requirement 9.7 strong-password rule. Returns an error or null. */
-export function validatePassword(password: string): string | null {
-  if (password.length < PASSWORD_RULES.minLength) {
-    return `Password must be at least ${PASSWORD_RULES.minLength} characters`;
-  }
-  if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
-    return 'Password must contain letters and numbers';
-  }
-  return null;
+/** True when a pre-biometric (v1 password) account still needs migrating. */
+export async function hasLegacyAccount(): Promise<boolean> {
+  const legacy = await getJSON<LegacyAccount>(LEGACY_ACCOUNT_KEY);
+  const migrated = await hasAccount();
+  return legacy !== null && !migrated;
 }
 
 /**
- * First-run account creation. Stores the username + password verifier and
- * returns the freshly-derived encryption key for the new session.
+ * First-time enrolment: require a device lock, mint a random biometric-gated
+ * master key, and record the marker. Returns the session key.
  */
-export async function registerAccount(
-  username: string,
-  password: string
-): Promise<AuthSuccess> {
-  const uname = username.trim();
-  if (uname.length < 3) throw new Error('Username must be at least 3 characters');
-  const pwError = validatePassword(password);
-  if (pwError) throw new Error(pwError);
+export async function enrollVault(): Promise<AuthSuccess> {
+  const encryptionKey = await createMasterKey(); // throws NoDeviceLockError if no lock
+  const marker: VaultMarker = { createdAt: Date.now() };
+  await setJSON(VAULT_MARKER_KEY, marker);
+  return { encryptionKey };
+}
 
-  const pwSalt = newSalt();
-  const keySalt = newSalt();
-  const verifier = deriveKeyWithIterations(password, pwSalt, PBKDF2_ITERATIONS);
+/**
+ * Unlock an existing vault: reads the master key back, which forces device
+ * authentication (biometric → passcode). Throws on cancel/failure/no-lock.
+ */
+export async function unlockVault(): Promise<AuthSuccess> {
+  const encryptionKey = await unlockMasterKey();
+  return { encryptionKey };
+}
 
-  const account: StoredAccount = {
-    username: uname,
-    pwSalt: bytesToHex(pwSalt),
-    pwVerifier: bytesToHex(verifier),
-    keySalt: bytesToHex(keySalt),
-    iterations: PBKDF2_ITERATIONS,
-    createdAt: Date.now(),
-  };
-  await setJSON(ACCOUNT_KEY, account);
+/** Remove the vault marker + master key entirely (reset flow). */
+export async function deleteAccount(): Promise<void> {
+  await deleteItem(VAULT_MARKER_KEY);
+  await deleteMasterKey();
+}
 
+// ───────────────────────────────────────────────────────────────────────────
+// Legacy migration: v1 password account → v2 biometric-gated random key.
+// One-time. Decrypts every credential (live + all profile snapshots) with the
+// old password-derived key and re-encrypts under the new random master key.
+// ───────────────────────────────────────────────────────────────────────────
+
+interface LegacyAccount {
+  username: string;
+  keySalt: string;
+  // (verifier fields exist but are irrelevant once we have the password)
+}
+
+interface ProfileRegistry {
+  activeId: string;
+  profiles: { id: string; name: string; createdAt: number }[];
+}
+interface ProfileSnapshot {
+  allocations: unknown;
+  credIndex: string[];
+  creds: Record<string, StoredCredentials>;
+}
+
+function reEncryptField(
+  blob: EncryptedData | undefined,
+  oldKey: Uint8Array,
+  newKey: Uint8Array
+): EncryptedData | undefined {
+  if (!blob) return undefined;
+  return encryptString(decryptString(blob, oldKey), newKey);
+}
+
+function reEncryptRecord(
+  rec: StoredCredentials,
+  oldKey: Uint8Array,
+  newKey: Uint8Array
+): StoredCredentials {
   return {
-    username: uname,
-    encryptionKey: deriveKey(password, keySalt),
+    ...rec,
+    apiSecret: reEncryptField(rec.apiSecret, oldKey, newKey)!,
+    passphrase: reEncryptField(rec.passphrase, oldKey, newKey),
+    totpSecret: reEncryptField(rec.totpSecret, oldKey, newKey),
   };
 }
 
 /**
- * Authenticate against the stored account. On success returns the session
- * encryption key; on failure logs the attempt (Req 9.6) and throws.
- * 
- * If the stored account uses an older iteration count (< 600,000), the
- * password is automatically re-hashed with the current count during a
- * successful login (upgrades existing users over time).
+ * Migrate the legacy password vault to the biometric model.
+ *
+ * @param password the user's existing password (used ONLY to derive the old
+ *   master key so we can re-encrypt; never stored).
+ * @returns the new session key on success.
+ * @throws if the password can't unlock the old credentials, or the device has
+ *   no lock (createMasterKey enforces it).
  */
-export async function login(username: string, password: string): Promise<AuthSuccess> {
-  const account = await getJSON<StoredAccount>(ACCOUNT_KEY);
-  if (!account) throw new Error('No local account exists');
+export async function migrateLegacyAccount(password: string): Promise<AuthSuccess> {
+  const legacy = await getJSON<LegacyAccount>(LEGACY_ACCOUNT_KEY);
+  if (!legacy) throw new Error('No legacy account to migrate');
 
-  // 1. Use the iteration count that was stored when the account was created
-  const storedIterations = account.iterations || 100000; // Fallback for very old accounts
-  
-  // 2. Derive the candidate using the SAME iteration count that was used to create it
-  const candidate = deriveKeyWithIterations(password, hexToBytes(account.pwSalt), storedIterations);
-  
-  const ok =
-    account.username.toLowerCase() === username.trim().toLowerCase() &&
-    constantTimeEqual(candidate, hexToBytes(account.pwVerifier));
+  const oldKey = deriveKey(password, hexToBytes(legacy.keySalt));
 
-  if (!ok) {
-    logFailedAttempt(username);
-    throw new Error('Invalid username or password');
+  // Mint the new random biometric-gated key FIRST (this enforces device lock).
+  const newKey = await createMasterKey();
+
+  // PHASE 1 — compute everything in memory. Any wrong-password (GCM auth)
+  // failure throws HERE, before a single record is written, so a bad password
+  // can never leave the vault half-migrated / corrupted.
+  const liveIds = await listStoredCredentialExchanges();
+  const liveNext: Record<string, StoredCredentials> = {};
+  for (const id of liveIds) {
+    const rec = await readStoredCredentialRecord(id);
+    if (rec) liveNext[id] = reEncryptRecord(rec, oldKey, newKey);
   }
 
-  // 3. ✅ UPGRADE: If user is using an old iteration count, re-hash their password
-  if (storedIterations < PBKDF2_ITERATIONS) {
-    try {
-      const newSalt = newSalt();
-      const newVerifier = deriveKeyWithIterations(password, newSalt, PBKDF2_ITERATIONS);
-      
-      const updatedAccount: StoredAccount = {
-        ...account,
-        pwSalt: bytesToHex(newSalt),
-        pwVerifier: bytesToHex(newVerifier),
-        iterations: PBKDF2_ITERATIONS,
-        // keySalt stays the same so encryption key derivation stays the same
-      };
-      await setJSON(ACCOUNT_KEY, updatedAccount);
-      
-      console.log(`✅ Upgraded ${username} from ${storedIterations} to ${PBKDF2_ITERATIONS} iterations`);
-    } catch (e) {
-      // Non-fatal: log but don't block login
-      console.warn('Failed to upgrade password hash:', e);
+  const registry = await getJSON<ProfileRegistry>(PROFILE_REGISTRY_KEY);
+  const snapNext: { key: string; snap: ProfileSnapshot }[] = [];
+  if (registry) {
+    for (const p of registry.profiles) {
+      const key = legacySnapshotKey(p.id);
+      const snap = await getJSON<ProfileSnapshot>(key);
+      if (!snap) continue;
+      const nextCreds: Record<string, StoredCredentials> = {};
+      for (const [id, rec] of Object.entries(snap.creds)) {
+        nextCreds[id] = reEncryptRecord(rec, oldKey, newKey);
+      }
+      snapNext.push({ key, snap: { ...snap, creds: nextCreds } });
     }
   }
 
-  // 4. Derive the encryption key using the original keySalt (unchanged)
-  return {
-    username: account.username,
-    encryptionKey: deriveKey(password, hexToBytes(account.keySalt)),
-  };
-}
+  // PHASE 2 — commit. All decryption succeeded, so these writes are safe.
+  for (const [id, rec] of Object.entries(liveNext)) {
+    await writeStoredCredentialRecord(id, rec);
+  }
+  for (const { key, snap } of snapNext) {
+    await setJSON(key, snap);
+  }
+  await writeMasterKey(newKey);
+  await setJSON(VAULT_MARKER_KEY, { createdAt: Date.now() } satisfies VaultMarker);
+  await deleteItem(LEGACY_ACCOUNT_KEY);
 
-/**
- * Verify a password against the stored account WITHOUT establishing a session.
- * Used to gate sensitive in-session actions (e.g. exporting a profile) where we
- * require the user to re-enter their password but don't want to re-login.
- * Constant-time; returns false if no account exists.
- */
-export async function verifyPassword(password: string): Promise<boolean> {
-  const account = await getJSON<StoredAccount>(ACCOUNT_KEY);
-  if (!account) return false;
-  const candidate = deriveKeyWithIterations(password, hexToBytes(account.pwSalt), account.iterations || 100000);
-  return constantTimeEqual(candidate, hexToBytes(account.pwVerifier));
-}
-
-/** Remove the local account entirely (e.g. for a reset flow). */
-export async function deleteAccount(): Promise<void> {
-  await deleteItem(ACCOUNT_KEY);
-}
-
-/** Req 9.6 — record failed authentication without ever logging the password. */
-function logFailedAttempt(username: string): void {
-  console.warn(
-    `[auth] Failed login attempt for "${username.trim().slice(0, 32)}" at ${new Date().toISOString()}`
-  );
-}
-
-/** Constant-time comparison to avoid timing side channels on the verifier. */
-function constantTimeEqual(a: Uint8Array, b: Uint8Array): boolean {
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
+  return { encryptionKey: newKey };
 }

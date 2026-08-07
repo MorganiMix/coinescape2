@@ -25,27 +25,30 @@ import {
   encryptApiCredentials,
   detectFreshInstall,
   hasAccount as hasLocalAccount,
+  hasLegacyAccount,
   getStoredSetupIp,
   listStoredCredentialExchanges,
   setStoredSetupIp,
   loadAllocations,
   loadRegistry,
-  login as localLogin,
+  enrollVault,
+  unlockVault,
+  migrateLegacyAccount,
   MAX_PROFILES,
   overwriteProfile,
   parseImport,
   ProfileMeta,
   ProfilePayload,
   ProfileSnapshot,
-  registerAccount as localRegister,
   renameProfile as renameProfileStore,
   retrieveCredentials,
   saveAllocations,
   storeCredentials,
   switchProfile as switchProfileStore,
-  verifyPassword,
   wipeAllSecureStoreEntries,
 } from '@/security';
+import * as LocalAuthentication from 'expo-local-authentication';
+import { Platform } from 'react-native';
 import {
   defaultAllocationTargets,
   initialExchanges,
@@ -72,17 +75,27 @@ import {
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000;
 
 interface AppState {
-  // Auth (local-only, username + password)
+  // Auth (local-only, PASSWORDLESS — device biometrics / passcode)
   isAuthenticated: boolean;
   /** Whether the on-device account check has finished (avoids redirect flash). */
   authChecked: boolean;
-  /** True once a local account exists — drives login vs. create-account UI. */
+  /** True once the biometric vault has been enrolled on this device. */
   hasAccount: boolean;
-  username: string | null;
-  /** Authenticate against the local account. Throws on bad credentials. */
-  login: (username: string, password: string) => Promise<void>;
-  /** First-run: create the local account, then sign in. Throws on weak input. */
-  register: (username: string, password: string) => Promise<void>;
+  /** True when a pre-biometric password account is present and needs migrating. */
+  needsMigration: boolean;
+  /**
+   * Unlock the vault with device authentication (Face ID / Touch ID → passcode).
+   * Throws NoDeviceLockError / VaultAuthError.
+   */
+  unlock: () => Promise<void>;
+  /** First-run: enrol the biometric vault, then sign in. Throws NoDeviceLockError. */
+  enroll: () => Promise<void>;
+  /**
+   * One-time migration of a legacy password account: re-wraps all credentials
+   * under a new biometric-gated key using the supplied password. Throws on a
+   * wrong password or if no device lock is set.
+   */
+  migrate: (password: string) => Promise<void>;
   signOut: () => void;
   /** Reset the inactivity timer; call on user interaction. */
   touchSession: () => void;
@@ -177,20 +190,21 @@ interface AppState {
    */
   createProfile: (name: string) => Promise<{ ok: boolean; error?: string }>;
   /**
-   * Export the ACTIVE profile as an encrypted JSON string, gated by the
-   * account password (re-entered). Resolves with { ok, text?, error? }.
+   * Export the ACTIVE profile as an encrypted transfer string (to be rendered
+   * as a QR code), encrypted under a one-time transfer PIN. Requires a fresh
+   * biometric re-auth first. Resolves with { ok, text?, error? }.
    */
   exportActiveProfile: (
-    password: string
+    pin: string
   ) => Promise<{ ok: boolean; text?: string; error?: string }>;
   /**
-   * Import an encrypted profile from pasted text + the username/password it was
-   * exported under. Lands in `overwriteId` if given, else a free slot.
+   * Import an encrypted profile from a scanned QR string + the transfer PIN it
+   * was exported under. Lands in `overwriteId` if given, else a free slot.
    * Resolves with { ok, needsSlot? (all slots full), error? }.
    */
   importProfileFromText: (
     text: string,
-    password: string,
+    pin: string,
     overwriteId?: string
   ) => Promise<{ ok: boolean; needsSlot?: boolean; error?: string }>;
 
@@ -253,7 +267,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [hasAccount, setHasAccount] = useState(false);
-  const [username, setUsername] = useState<string | null>(null);
+  const [needsMigration, setNeedsMigration] = useState(false);
   const [exchanges, setExchanges] = useState<Exchange[]>(initialExchanges);
   // External IP tracking for API-key IP-whitelist warnings.
   const [currentIp, setCurrentIp] = useState<string | null>(null);
@@ -322,10 +336,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           await wipeAllSecureStoreEntries();
         }
         const exists = await hasLocalAccount();
-        if (!cancelled) setHasAccount(exists);
+        const legacy = exists ? false : await hasLegacyAccount();
+        if (!cancelled) {
+          setHasAccount(exists);
+          setNeedsMigration(legacy);
+        }
       } catch {
-        // If the detection itself fails, fall back to the keychain check so
-        // the user can still log in to an existing account.
+        // If the detection itself fails, fall back to the marker check so the
+        // user can still unlock an existing vault.
         try {
           const exists = await hasLocalAccount();
           if (!cancelled) setHasAccount(exists);
@@ -355,7 +373,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       encryptionKeyRef.current.fill(0);
       encryptionKeyRef.current = null;
     }
-    setUsername(null);
     setIsAuthenticated(false);
     setLiveDetailed({});
     setPrices({});
@@ -505,10 +522,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const beginSession = useCallback(
-    (name: string, key: Uint8Array) => {
+    (key: Uint8Array) => {
       encryptionKeyRef.current = key;
-      setUsername(name);
       setHasAccount(true);
+      setNeedsMigration(false);
       setIsAuthenticated(true);
       clearInactivityTimer();
       inactivityTimer.current = setTimeout(() => signOut(), SESSION_TIMEOUT_MS);
@@ -518,18 +535,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [clearInactivityTimer, signOut, restoreSession]
   );
 
-  const login = useCallback(
-    async (name: string, password: string) => {
-      const { username: uname, encryptionKey } = await localLogin(name, password);
-      beginSession(uname, encryptionKey);
-    },
-    [beginSession]
-  );
+  /** Unlock an existing biometric vault (device auth prompt happens here). */
+  const unlock = useCallback(async () => {
+    const { encryptionKey } = await unlockVault();
+    beginSession(encryptionKey);
+  }, [beginSession]);
 
-  const register = useCallback(
-    async (name: string, password: string) => {
-      const { username: uname, encryptionKey } = await localRegister(name, password);
-      beginSession(uname, encryptionKey);
+  /** First-run: enrol the biometric vault, then start the session. */
+  const enroll = useCallback(async () => {
+    const { encryptionKey } = await enrollVault();
+    beginSession(encryptionKey);
+  }, [beginSession]);
+
+  /** One-time migration of a legacy password account to the biometric vault. */
+  const migrate = useCallback(
+    async (password: string) => {
+      const { encryptionKey } = await migrateLegacyAccount(password);
+      beginSession(encryptionKey);
     },
     [beginSession]
   );
@@ -798,15 +820,22 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const exportActiveProfile = useCallback(
-    async (password: string): Promise<{ ok: boolean; text?: string; error?: string }> => {
+    async (pin: string): Promise<{ ok: boolean; text?: string; error?: string }> => {
       const key = encryptionKeyRef.current;
-      if (!key || !username) return { ok: false, error: 'Session locked — sign in again.' };
-      if (!(await verifyPassword(password))) {
-        return { ok: false, error: 'Incorrect password.' };
+      if (!key) return { ok: false, error: 'Session locked — sign in again.' };
+      // Re-authenticate with biometrics / device passcode before exposing
+      // decrypted credentials in a transferable QR payload.
+      if (Platform.OS !== 'web') {
+        const res = await LocalAuthentication.authenticateAsync({
+          promptMessage: 'Confirm to export this profile',
+        });
+        if (!res.success) {
+          return { ok: false, error: 'Authentication cancelled.' };
+        }
       }
       try {
         // Decrypt the active profile's credentials with the live session key,
-        // then re-encrypt the whole payload under the username+password file key.
+        // then re-encrypt the whole payload under the one-time transfer PIN.
         const ids = await listStoredCredentialExchanges();
         const creds: Record<string, ApiCredentials> = {};
         for (const id of ids) {
@@ -816,28 +845,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const savedAlloc = (await loadAllocations()) ?? allocations;
         const payload: ProfilePayload = { allocations: savedAlloc, creds };
         const active = profiles.find((p) => p.id === activeProfileId);
-        const text = buildExport(active?.name ?? 'Profile', payload, username, password);
+        const text = buildExport(active?.name ?? 'Profile', payload, pin);
         return { ok: true, text };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
-    [username, allocations, profiles, activeProfileId]
+    [allocations, profiles, activeProfileId]
   );
 
   const importProfileFromText = useCallback(
     async (
       text: string,
-      password: string,
+      pin: string,
       overwriteId?: string
     ): Promise<{ ok: boolean; needsSlot?: boolean; error?: string }> => {
       const key = encryptionKeyRef.current;
-      if (!key || !username) return { ok: false, error: 'Session locked — sign in again.' };
+      if (!key) return { ok: false, error: 'Session locked — sign in again.' };
 
-      // 1. Decrypt with the username+password the file was exported under.
+      // 1. Decrypt with the one-time transfer PIN the QR was exported under.
       let imported: { name: string; payload: ProfilePayload };
       try {
-        imported = parseImport(text.trim(), username, password);
+        imported = parseImport(text.trim(), pin);
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -884,7 +913,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
-    [username, rehydrateActiveProfile]
+    [rehydrateActiveProfile]
   );
 
   const allocationsForExchange = useCallback(
@@ -1227,9 +1256,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     isAuthenticated,
     authChecked,
     hasAccount,
-    username,
-    login,
-    register,
+    needsMigration,
+    unlock,
+    enroll,
+    migrate,
     signOut,
     touchSession,
     exchanges,
