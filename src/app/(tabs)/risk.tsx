@@ -4,15 +4,14 @@ import { View, Text, StyleSheet, FlatList } from 'react-native';
 import { MOCK_RISK_BASELINE } from '@/constants/mockData';
 import { useRiskTicker } from '@/hooks/useRiskTicker';
 import RiskCard from '@/components/RiskCard';
+import { Brand, Spacing, Fonts } from '@/constants/Colors';
 
 export default function RiskScreen() {
   const [baseline, setBaseline] = useState(MOCK_RISK_BASELINE);
   const displayRisks = useRiskTicker(baseline);
 
-  // Refresh baseline every 30s (in case you replace mock with API later)
   useEffect(() => {
     const refresh = setInterval(() => {
-      // In the future: fetch('/api/risks').then(res => setBaseline(res))
       setBaseline(MOCK_RISK_BASELINE);
     }, 30000);
     return () => clearInterval(refresh);
@@ -22,8 +21,12 @@ export default function RiskScreen() {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.title}>⚠️ Exchange Risk Monitor</Text>
-        <Text style={styles.liveBadge}>● Live · 1s</Text>
+        <View style={styles.liveBadge}>
+          <Text style={styles.liveDot}>●</Text>
+          <Text style={styles.liveText}>Live · 1s</Text>
+        </View>
       </View>
+
       <FlatList
         data={displayRisks}
         keyExtractor={item => item.exchange}
@@ -33,16 +36,62 @@ export default function RiskScreen() {
         columnWrapperStyle={{ justifyContent: 'space-between' }}
         showsVerticalScrollIndicator={false}
       />
-      <Text style={styles.footer}>Risk = estimated probability of forced shutdown within 12 months.</Text>
+
+      <Text style={styles.footer}>
+        Risk = estimated probability of forced shutdown within 12 months.
+      </Text>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#f9fafb', padding: 16 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
-  title: { fontSize: 20, fontWeight: 'bold', color: '#111827' },
-  liveBadge: { fontSize: 12, color: '#22c55e', fontWeight: '600' },
-  list: { paddingBottom: 20 },
-  footer: { fontSize: 10, color: '#9ca3af', textAlign: 'center', marginTop: 8, marginBottom: 20 },
+  container: {
+    flex: 1,
+    backgroundColor: Brand.bg,
+    paddingTop: Spacing.four,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: Spacing.four,
+    paddingBottom: Spacing.three,
+  },
+  title: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: Brand.text,
+    fontFamily: Fonts.default.sans,
+  },
+  liveBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Brand.successSoft,
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+    borderRadius: Spacing.one,
+  },
+  liveDot: {
+    color: Brand.success,
+    fontSize: 10,
+    marginRight: Spacing.half,
+  },
+  liveText: {
+    color: Brand.success,
+    fontSize: 11,
+    fontFamily: Fonts.default.mono,
+    fontWeight: '600',
+  },
+  list: {
+    paddingHorizontal: Spacing.four,
+    paddingBottom: Spacing.four,
+  },
+  footer: {
+    fontSize: 10,
+    color: Brand.textMuted,
+    textAlign: 'center',
+    fontFamily: Fonts.default.sans,
+    paddingHorizontal: Spacing.four,
+    paddingBottom: Spacing.three,
+  },
 });
