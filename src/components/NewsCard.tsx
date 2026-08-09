@@ -2,21 +2,32 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Linking, StyleSheet } from 'react-native';
 import { NewsItem } from '@/constants/mockData';
+import { Brand, Radius, Spacing, Fonts } from '@/constants/Colors';
 
 export default function NewsCard({ item }: { item: NewsItem }) {
   const getSeverityColor = (sev: string) => {
-    if (sev === 'high') return '#dc2626';
-    if (sev === 'medium') return '#eab308';
-    return '#22c55e';
+    if (sev === 'high') return Brand.danger;
+    if (sev === 'medium') return Brand.warning;
+    return Brand.success;
+  };
+
+  const getSeverityBg = (sev: string) => {
+    if (sev === 'high') return Brand.dangerSoft;
+    if (sev === 'medium') return 'rgba(245, 166, 35, 0.16)';
+    return Brand.successSoft;
   };
 
   return (
     <View style={styles.card}>
       <View style={styles.header}>
-        <Text style={[styles.badge, { backgroundColor: getSeverityColor(item.severity) }]}>
-          {item.exchange}
+        <View style={[styles.badge, { backgroundColor: getSeverityBg(item.severity) }]}>
+          <Text style={[styles.badgeText, { color: getSeverityColor(item.severity) }]}>
+            {item.exchange}
+          </Text>
+        </View>
+        <Text style={styles.time}>
+          {new Date(item.timestamp).toLocaleTimeString()}
         </Text>
-        <Text style={styles.time}>{new Date(item.timestamp).toLocaleTimeString()}</Text>
       </View>
       <Text style={styles.headline}>{item.headline}</Text>
       <Text style={styles.summary}>{item.summary}</Text>
@@ -28,11 +39,51 @@ export default function NewsCard({ item }: { item: NewsItem }) {
 }
 
 const styles = StyleSheet.create({
-  card: { backgroundColor: '#fff', borderRadius: 12, padding: 16, marginBottom: 12, shadowColor: '#000', shadowOpacity: 0.05, shadowRadius: 4, elevation: 2 },
-  header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  badge: { paddingHorizontal: 10, paddingVertical: 2, borderRadius: 12, color: '#fff', fontSize: 12, fontWeight: 'bold', overflow: 'hidden' },
-  time: { fontSize: 12, color: '#9ca3af' },
-  headline: { fontSize: 16, fontWeight: '600', marginTop: 8, color: '#111827' },
-  summary: { fontSize: 14, color: '#4b5563', marginTop: 4 },
-  source: { fontSize: 13, color: '#2563eb', marginTop: 8 },
+  card: {
+    backgroundColor: Brand.card,
+    borderRadius: Radius.md,
+    padding: Spacing.three,
+    marginBottom: Spacing.three,
+    borderWidth: 1,
+    borderColor: Brand.cardBorder,
+  },
+  header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  badge: {
+    paddingHorizontal: Spacing.two,
+    paddingVertical: Spacing.half,
+    borderRadius: Radius.pill,
+  },
+  badgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  time: {
+    fontSize: 12,
+    color: Brand.textMuted,
+    fontFamily: Fonts.default.mono,
+  },
+  headline: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: Brand.text,
+    marginTop: Spacing.two,
+    fontFamily: Fonts.default.sans,
+  },
+  summary: {
+    fontSize: 14,
+    color: Brand.textSecondary,
+    marginTop: Spacing.one,
+    fontFamily: Fonts.default.sans,
+    lineHeight: 20,
+  },
+  source: {
+    fontSize: 13,
+    color: Brand.accent,
+    marginTop: Spacing.two,
+    fontFamily: Fonts.default.sans,
+  },
 });
