@@ -12,23 +12,17 @@ export default function TabLayout() {
           backgroundColor: Brand.bg,
           borderTopColor: Brand.cardBorder,
           borderTopWidth: 1,
+          paddingBottom: 4,
         },
         tabBarActiveTintColor: Brand.accent,
         tabBarInactiveTintColor: Brand.textMuted,
+        tabBarLabelStyle: {
+          fontFamily: 'system-ui',
+          fontSize: 11,
+          fontWeight: '500',
+        },
       }}
     >
-      {/* Your existing tabs – keep these */}
-      <Tabs.Screen
-        name="index"
-        options={{
-          title: 'Home',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="home-outline" size={size} color={color} />
-          ),
-        }}
-      />
-
-      {/* 👇 NEW – News Tab */}
       <Tabs.Screen
         name="news"
         options={{
@@ -38,35 +32,12 @@ export default function TabLayout() {
           ),
         }}
       />
-
-      {/* 👇 NEW – Risk Tab */}
       <Tabs.Screen
         name="risk"
         options={{
           title: 'Risk',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="stats-chart-outline" size={size} color={color} />
-          ),
-        }}
-      />
-
-      {/* Your other existing tabs (e.g., explore, profile) */}
-      <Tabs.Screen
-        name="explore"
-        options={{
-          title: 'Explore',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="compass-outline" size={size} color={color} />
-          ),
-        }}
-      />
-
-      <Tabs.Screen
-        name="profile"
-        options={{
-          title: 'Profile',
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="person-outline" size={size} color={color} />
           ),
         }}
       />
