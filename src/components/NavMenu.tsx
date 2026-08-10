@@ -7,13 +7,16 @@ import { requestLeave } from '@/components/navGuard';
 import { Brand, Radius, Spacing } from '@/constants/theme';
 import { useAppStore } from '@/store/AppStore';
 
-type RouteName = 'panic' | 'settings' | 'profiles' | 'guide';
+type RouteName = 'panic' | 'settings' | 'profiles' | 'guide' | 'news' | 'risk';
 
 const ITEMS: { name: RouteName; label: string; glyph: string }[] = [
   { name: 'panic', label: 'Panic', glyph: '🛑' },
   { name: 'settings', label: 'Settings', glyph: '⚙️' },
   { name: 'profiles', label: 'Profiles', glyph: '💾' },
   { name: 'guide', label: 'Setup Guide', glyph: '📘' },
+  // 👇 ADD THESE TWO NEW ITEMS
+  { name: 'news', label: 'News', glyph: '📰' },
+  { name: 'risk', label: 'Risk Monitor', glyph: '📊' },
 ];
 
 /**
@@ -31,7 +34,14 @@ export function NavMenu() {
 
   const go = (name: RouteName) => {
     setOpen(false);
-    const doNav = () => router.replace(`/(app)/${name}`);
+    const doNav = () => {
+      // Check if the route is in (app) folder or root
+      if (name === 'news' || name === 'risk') {
+        router.push(`/${name}`);
+      } else {
+        router.replace(`/(app)/${name}`);
+      }
+    };
     // Give the active screen (e.g. Settings) a chance to intercept — it may
     // prompt to save unsaved changes before letting navigation continue.
     if (!requestLeave(doNav)) doNav();
