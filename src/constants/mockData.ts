@@ -17,7 +17,7 @@ export type RiskItem = {
 
 // Helper functions
 function extractExchange(title: string): string {
-  const exchanges = ['Binance', 'Coinbase', 'Kraken', 'Bybit', 'OKX', 'KuCoin', 'Gate.io', 'Bitfinex'];
+  const exchanges = ['Binance', 'Coinbase', 'Kraken', 'Bybit', 'OKX', 'KuCoin'];
   for (const ex of exchanges) {
     if (title.includes(ex)) return ex;
   }
@@ -33,7 +33,7 @@ function detectSeverity(title: string): 'high' | 'medium' | 'low' {
   return 'low';
 }
 
-// Static fallback data
+// Static fallback news
 const FALLBACK_NEWS: NewsItem[] = [
   {
     id: '1',
@@ -97,7 +97,7 @@ const FALLBACK_NEWS: NewsItem[] = [
   },
 ];
 
-// NEWS - tries multiple APIs
+// ========== NEWS API ==========
 export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] }> => {
   const APIs = [
     'https://cryptovision-api.vercel.app/news',
@@ -110,39 +110,34 @@ export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] 
       if (!response.ok) continue;
       const data = await response.json();
       
-      // Crypto Vision format
-      if (data.articles || data.news || data.data) {
-        const articles = data.articles || data.data || data.news || [];
-        if (articles.length > 0) {
-          return {
-            date: new Date().toISOString(),
-            news: articles.slice(0, 20).map((article: any) => ({
-              id: article.id || String(Math.random()),
-              exchange: extractExchange(article.title || article.headline || ''),
-              headline: article.title || article.headline || 'No title',
-              summary: article.description || article.summary || article.content || '',
-              source: article.source || article.publisher || 'Crypto News',
-              url: article.url || article.link || '#',
-              timestamp: article.published_at || article.publishedAt || new Date().toISOString(),
-              severity: detectSeverity(article.title || article.headline || ''),
-            })),
-          };
-        }
+      const articles = data.articles || data.data || data.news || [];
+      if (articles.length > 0) {
+        return {
+          date: new Date().toISOString(),
+          news: articles.slice(0, 20).map((article: any) => ({
+            id: article.id || String(Math.random()),
+            exchange: extractExchange(article.title || article.headline || ''),
+            headline: article.title || article.headline || 'No title',
+            summary: article.description || article.summary || article.content || '',
+            source: article.source || article.publisher || 'Crypto News',
+            url: article.url || article.link || '#',
+            timestamp: article.published_at || article.publishedAt || new Date().toISOString(),
+            severity: detectSeverity(article.title || article.headline || ''),
+          })),
+        };
       }
     } catch (error) {
       console.warn(`Failed to fetch from ${api}:`, error);
     }
   }
 
-  // If all APIs fail, return fallback data
-  console.warn('All news APIs failed, using fallback data');
   return {
     date: new Date().toISOString(),
     news: FALLBACK_NEWS,
   };
 };
 
-// RISK - uses CoinGecko
+// ========== RISK API (CoinGecko - NO BACKEND NEEDED) ==========
 export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: RiskItem[] }> => {
   try {
     const response = await fetch('https://api.coingecko.com/api/v3/exchanges');
@@ -168,6 +163,7 @@ export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: Risk
       };
     }
     throw new Error('No exchanges matched');
+    
   } catch (error) {
     console.error('Failed to fetch risks:', error);
     return {
