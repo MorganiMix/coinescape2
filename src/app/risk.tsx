@@ -1,27 +1,40 @@
 // src/app/risk.tsx
 import React, { useEffect, useState } from 'react';
-import { View, Text, StyleSheet, FlatList, TouchableOpacity } from 'react-native';
+import { View, Text, StyleSheet, FlatList, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { MOCK_RISK_BASELINE } from '@/constants/mockData';
+import { fetchRealRisks, RiskItem } from '@/constants/mockData';
 import { useRiskTicker } from '@/hooks/useRiskTicker';
 import RiskCard from '@/components/RiskCard';
-import { Brand, Spacing, Fonts } from '@/constants/Colors';
+import { Brand, Spacing, Fonts } from '@/constants/theme'; // ← CHANGED
 
 export default function RiskScreen() {
   const router = useRouter();
-  const [baseline, setBaseline] = useState(MOCK_RISK_BASELINE);
+  const [baseline, setBaseline] = useState<RiskItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const displayRisks = useRiskTicker(baseline);
 
   useEffect(() => {
-    const refresh = setInterval(() => {
-      setBaseline(MOCK_RISK_BASELINE);
-    }, 30000);
-    return () => clearInterval(refresh);
+    loadRisks();
   }, []);
+
+  const loadRisks = async () => {
+    setLoading(true);
+    const data = await fetchRealRisks();
+    setBaseline(data.risks);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (!loading) {
+      const refresh = setInterval(() => {
+        loadRisks();
+      }, 30000);
+      return () => clearInterval(refresh);
+    }
+  }, [loading]);
 
   return (
     <View style={styles.container}>
-      {/* Back Button */}
       <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
         <Text style={styles.backText}>← Back to Settings</Text>
       </TouchableOpacity>
@@ -34,19 +47,30 @@ export default function RiskScreen() {
         </View>
       </View>
 
-      <FlatList
-        data={displayRisks}
-        keyExtractor={item => item.exchange}
-        renderItem={({ item }) => <RiskCard item={item} />}
-        contentContainerStyle={styles.list}
-        numColumns={2}
-        columnWrapperStyle={{ justifyContent: 'space-between' }}
-        showsVerticalScrollIndicator={false}
-      />
-
-      <Text style={styles.footer}>
-        Risk = estimated probability of forced shutdown within 12 months.
-      </Text>
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Brand.accent} />
+          <Text style={styles.loadingText}>Loading risk data...</Text>
+        </View>
+      ) : (
+        <>
+          <FlatList
+            data={displayRisks}
+            keyExtractor={item => item.exchange}
+            renderItem={({ item }) => <RiskCard item={item} />}
+            contentContainerStyle={styles.list}
+            numColumns={2}
+            columnWrapperStyle={{ justifyContent: 'space-between' }}
+            showsVerticalScrollIndicator={false}
+            ListEmptyComponent={
+              <Text style={styles.emptyText}>No risk data available.</Text>
+            }
+          />
+          <Text style={styles.footer}>
+            Risk = estimated probability of forced shutdown within 12 months.
+          </Text>
+        </>
+      )}
     </View>
   );
 }
@@ -65,7 +89,7 @@ const styles = StyleSheet.create({
   backText: {
     color: Brand.accent,
     fontSize: 16,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
     fontWeight: '600',
   },
   header: {
@@ -79,7 +103,7 @@ const styles = StyleSheet.create({
     fontSize: 20,
     fontWeight: '700',
     color: Brand.text,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
   },
   liveBadge: {
     flexDirection: 'row',
@@ -97,7 +121,7 @@ const styles = StyleSheet.create({
   liveText: {
     color: Brand.success,
     fontSize: 11,
-    fontFamily: Fonts.default.mono,
+    fontFamily: Fonts.mono,
     fontWeight: '600',
   },
   list: {
@@ -108,8 +132,24 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: Brand.textMuted,
     textAlign: 'center',
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
     paddingHorizontal: Spacing.four,
     paddingBottom: Spacing.three,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: Brand.textSecondary,
+    marginTop: Spacing.two,
+    fontFamily: Fonts.sans,
+  },
+  emptyText: {
+    color: Brand.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.five,
+    fontFamily: Fonts.sans,
   },
 });
