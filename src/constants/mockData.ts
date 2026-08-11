@@ -12,45 +12,10 @@ export type NewsItem = {
 
 export type RiskItem = {
   exchange: string;
-  risk: number; // baseline percentage
+  risk: number;
 };
 
-// ========== REAL NEWS API ==========
-export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] }> => {
-  try {
-    // OPTION 1: Crypto Vision (Free, no API key)
-    const response = await fetch('https://cryptovision-api.vercel.app/news');
-    
-    // OPTION 2: CoinGecko News (Free, no API key)
-    // const response = await fetch('https://api.coingecko.com/api/v3/news');
-    
-    const data = await response.json();
-    
-    // Map API response to your NewsItem format
-    // Adjust this based on which API you use
-    const articles = data.articles || data.data || data.news || [];
-    
-    return {
-      date: new Date().toISOString(),
-      news: articles.slice(0, 20).map((article: any) => ({
-        id: article.id || String(Math.random()),
-        exchange: extractExchange(article.title || article.headline || ''),
-        headline: article.title || article.headline || 'No title',
-        summary: article.description || article.summary || article.content || '',
-        source: article.source || article.publisher || 'Unknown',
-        url: article.url || article.link || '#',
-        timestamp: article.published_at || article.publishedAt || new Date().toISOString(),
-        severity: detectSeverity(article.title || article.headline || ''),
-      })),
-    };
-  } catch (error) {
-    console.error('Failed to fetch news:', error);
-    // Return fallback empty array
-    return { date: new Date().toISOString(), news: [] };
-  }
-};
-
-// Helper: Extract exchange name from headline
+// Helper functions
 function extractExchange(title: string): string {
   const exchanges = ['Binance', 'Coinbase', 'Kraken', 'Bybit', 'OKX', 'KuCoin', 'Gate.io', 'Bitfinex'];
   for (const ex of exchanges) {
@@ -59,7 +24,6 @@ function extractExchange(title: string): string {
   return 'Other';
 }
 
-// Helper: Detect severity from headline
 function detectSeverity(title: string): 'high' | 'medium' | 'low' {
   const high = ['hack', 'sue', 'lawsuit', 'fine', 'penalty', 'crash', 'emergency', 'warning'];
   const medium = ['delay', 'suspend', 'investigation', 'concern'];
@@ -69,20 +33,143 @@ function detectSeverity(title: string): 'high' | 'medium' | 'low' {
   return 'low';
 }
 
-// ========== REAL RISK API (Your Backend) ==========
-// For now, this returns static data. Replace with your backend endpoint.
+// Static fallback data
+const FALLBACK_NEWS: NewsItem[] = [
+  {
+    id: '1',
+    exchange: 'Binance',
+    headline: 'Binance expands European operations',
+    summary: 'Binance announces new European headquarters and regulatory compliance updates.',
+    source: 'CoinDesk',
+    url: '#',
+    timestamp: new Date().toISOString(),
+    severity: 'low',
+  },
+  {
+    id: '2',
+    exchange: 'Coinbase',
+    headline: 'Coinbase reports Q3 earnings',
+    summary: 'Exchange reports better than expected earnings despite market downturn.',
+    source: 'Bloomberg',
+    url: '#',
+    timestamp: new Date().toISOString(),
+    severity: 'medium',
+  },
+  {
+    id: '3',
+    exchange: 'Kraken',
+    headline: 'Kraken receives regulatory approval',
+    summary: 'Kraken secures new licenses in EU and US markets.',
+    source: 'Reuters',
+    url: '#',
+    timestamp: new Date().toISOString(),
+    severity: 'low',
+  },
+  {
+    id: '4',
+    exchange: 'Bybit',
+    headline: 'Bybit addresses regulatory concerns',
+    summary: 'Exchange engages with regulators to ensure compliance.',
+    source: 'The Block',
+    url: '#',
+    timestamp: new Date().toISOString(),
+    severity: 'medium',
+  },
+  {
+    id: '5',
+    exchange: 'OKX',
+    headline: 'OKX launches new trading features',
+    summary: 'New derivatives products and improved liquidity features.',
+    source: 'CoinTelegraph',
+    url: '#',
+    timestamp: new Date().toISOString(),
+    severity: 'low',
+  },
+  {
+    id: '6',
+    exchange: 'KuCoin',
+    headline: 'KuCoin expands into Asian markets',
+    summary: 'Exchange announces expansion strategy for Southeast Asia.',
+    source: 'CoinTelegraph',
+    url: '#',
+    timestamp: new Date().toISOString(),
+    severity: 'low',
+  },
+];
+
+// NEWS - tries multiple APIs
+export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] }> => {
+  const APIs = [
+    'https://cryptovision-api.vercel.app/news',
+    'https://api.coingecko.com/api/v3/news',
+  ];
+
+  for (const api of APIs) {
+    try {
+      const response = await fetch(api);
+      if (!response.ok) continue;
+      const data = await response.json();
+      
+      // Crypto Vision format
+      if (data.articles || data.news || data.data) {
+        const articles = data.articles || data.data || data.news || [];
+        if (articles.length > 0) {
+          return {
+            date: new Date().toISOString(),
+            news: articles.slice(0, 20).map((article: any) => ({
+              id: article.id || String(Math.random()),
+              exchange: extractExchange(article.title || article.headline || ''),
+              headline: article.title || article.headline || 'No title',
+              summary: article.description || article.summary || article.content || '',
+              source: article.source || article.publisher || 'Crypto News',
+              url: article.url || article.link || '#',
+              timestamp: article.published_at || article.publishedAt || new Date().toISOString(),
+              severity: detectSeverity(article.title || article.headline || ''),
+            })),
+          };
+        }
+      }
+    } catch (error) {
+      console.warn(`Failed to fetch from ${api}:`, error);
+    }
+  }
+
+  // If all APIs fail, return fallback data
+  console.warn('All news APIs failed, using fallback data');
+  return {
+    date: new Date().toISOString(),
+    news: FALLBACK_NEWS,
+  };
+};
+
+// RISK - uses CoinGecko
 export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: RiskItem[] }> => {
   try {
-    // Replace this URL with your actual backend API
-    const response = await fetch('http://localhost:5000/api/risks/latest');
+    const response = await fetch('https://api.coingecko.com/api/v3/exchanges');
+    if (!response.ok) throw new Error('API response not OK');
     const data = await response.json();
-    return {
-      timestamp: data.timestamp || new Date().toISOString(),
-      risks: data.risks || [],
-    };
+    
+    const targetExchanges = ['Binance', 'Coinbase', 'Kraken', 'Bybit', 'OKX', 'KuCoin'];
+    const risks = data
+      .filter((ex: any) => targetExchanges.includes(ex.name))
+      .map((ex: any) => {
+        const trustScore = ex.trust_score || 5;
+        const risk = ((10 - trustScore) / 10) * 100;
+        return {
+          exchange: ex.name,
+          risk: Math.round(Math.min(100, Math.max(5, risk)) * 10) / 10,
+        };
+      });
+    
+    if (risks.length > 0) {
+      return {
+        timestamp: new Date().toISOString(),
+        risks: risks,
+      };
+    }
+    throw new Error('No exchanges matched');
   } catch (error) {
     console.error('Failed to fetch risks:', error);
-    // Fallback to static baseline if API fails
     return {
       timestamp: new Date().toISOString(),
       risks: [
@@ -96,7 +183,3 @@ export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: Risk
     };
   }
 };
-
-// For backwards compatibility with existing imports
-export const MOCK_NEWS: NewsItem[] = [];
-export const MOCK_RISK_BASELINE: RiskItem[] = [];
