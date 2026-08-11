@@ -2,7 +2,7 @@
 import React from 'react';
 import { View, Text, TouchableOpacity, Linking, StyleSheet } from 'react-native';
 import { NewsItem } from '@/constants/mockData';
-import { Brand, Radius, Spacing, Fonts } from '@/constants/Colors';
+import { Brand, Radius, Spacing, Fonts } from '@/constants/theme'; // ← CHANGED
 
 export default function NewsCard({ item }: { item: NewsItem }) {
   const getSeverityColor = (sev: string) => {
@@ -64,26 +64,26 @@ const styles = StyleSheet.create({
   time: {
     fontSize: 12,
     color: Brand.textMuted,
-    fontFamily: Fonts.default.mono,
+    fontFamily: Fonts.mono,
   },
   headline: {
     fontSize: 16,
     fontWeight: '600',
     color: Brand.text,
     marginTop: Spacing.two,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
   },
   summary: {
     fontSize: 14,
     color: Brand.textSecondary,
     marginTop: Spacing.one,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
     lineHeight: 20,
   },
   source: {
     fontSize: 13,
     color: Brand.accent,
     marginTop: Spacing.two,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
   },
 });
