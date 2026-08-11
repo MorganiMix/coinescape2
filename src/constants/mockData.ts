@@ -97,10 +97,10 @@ const FALLBACK_NEWS: NewsItem[] = [
   },
 ];
 
-// ========== NEWS API (CoinGecko Only) ==========
+// ========== NEWS API ==========
 export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] }> => {
   try {
-    // CoinGecko News API
+    console.log('Fetching news from CoinGecko...');
     const response = await fetch('https://api.coingecko.com/api/v3/news');
     
     if (!response.ok) {
@@ -108,8 +108,8 @@ export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] 
     }
     
     const data = await response.json();
+    console.log('News data received:', data);
     
-    // CoinGecko returns { data: [...] }
     const articles = data.data || [];
     
     if (articles.length === 0) {
@@ -130,7 +130,7 @@ export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] 
       })),
     };
   } catch (error) {
-    console.error('Failed to fetch news from CoinGecko:', error);
+    console.error('Failed to fetch news:', error);
     return {
       date: new Date().toISOString(),
       news: FALLBACK_NEWS,
@@ -138,10 +138,10 @@ export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] 
   }
 };
 
-// ========== RISK API (CoinGecko Only) ==========
+// ========== RISK API ==========
 export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: RiskItem[] }> => {
   try {
-    // CoinGecko Exchanges API
+    console.log('Fetching risk data from CoinGecko...');
     const response = await fetch('https://api.coingecko.com/api/v3/exchanges');
     
     if (!response.ok) {
@@ -149,13 +149,13 @@ export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: Risk
     }
     
     const data = await response.json();
+    console.log('Risk data received:', data);
     
     const targetExchanges = ['Binance', 'Coinbase', 'Kraken', 'Bybit', 'OKX', 'KuCoin'];
     
     const risks = data
       .filter((ex: any) => targetExchanges.includes(ex.name))
       .map((ex: any) => {
-        // trust_score is 0-10, convert to risk %
         const trustScore = ex.trust_score || 5;
         const risk = ((10 - trustScore) / 10) * 100;
         return {
@@ -173,7 +173,7 @@ export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: Risk
       risks: risks,
     };
   } catch (error) {
-    console.error('Failed to fetch risks from CoinGecko:', error);
+    console.error('Failed to fetch risks:', error);
     return {
       timestamp: new Date().toISOString(),
       risks: [
