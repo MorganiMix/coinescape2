@@ -2,13 +2,13 @@
 import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { RiskItem } from '@/constants/mockData';
-import { Brand, Radius, Spacing, Fonts } from '@/constants/Colors';
+import { Brand, Radius, Spacing, Fonts } from '@/constants/theme'; // ← CHANGED
 
 export default function RiskCard({ item }: { item: RiskItem }) {
   const getColor = (risk: number) => {
     if (risk < 15) return Brand.success;
     if (risk < 35) return Brand.warning;
-    if (risk < 50) return '#F97316'; // Orange – not in your palette but useful here
+    if (risk < 50) return '#F97316';
     return Brand.danger;
   };
 
@@ -55,7 +55,7 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
     color: Brand.text,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
   },
   riskBadge: {
     paddingHorizontal: Spacing.two,
@@ -65,7 +65,7 @@ const styles = StyleSheet.create({
   riskText: {
     fontSize: 16,
     fontWeight: '700',
-    fontFamily: Fonts.default.mono,
+    fontFamily: Fonts.mono,
   },
   barBg: {
     height: 4,
