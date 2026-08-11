@@ -1,20 +1,33 @@
 // src/app/news.tsx
-import React, { useState } from 'react';
-import { View, Text, ScrollView, TouchableOpacity, StyleSheet, FlatList } from 'react-native';
+import React, { useState, useEffect } from 'react';
+import { View, Text, ScrollView, TouchableOpacity, StyleSheet, FlatList, ActivityIndicator } from 'react-native';
 import { useRouter } from 'expo-router';
-import { MOCK_NEWS } from '@/constants/mockData';
+import { fetchRealNews, NewsItem } from '@/constants/mockData';
 import NewsCard from '@/components/NewsCard';
-import { Brand, Radius, Spacing, Fonts } from '@/constants/Colors';
+import { Brand, Radius, Spacing, Fonts } from '@/constants/theme'; // ← CHANGED
 
 export default function NewsScreen() {
   const router = useRouter();
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState<string>('All');
   const exchanges = ['All', 'Binance', 'Coinbase', 'Kraken', 'Bybit', 'OKX', 'KuCoin'];
-  const filtered = filter === 'All' ? MOCK_NEWS : MOCK_NEWS.filter(item => item.exchange === filter);
+
+  useEffect(() => {
+    loadNews();
+  }, []);
+
+  const loadNews = async () => {
+    setLoading(true);
+    const data = await fetchRealNews();
+    setNews(data.news);
+    setLoading(false);
+  };
+
+  const filtered = filter === 'All' ? news : news.filter(item => item.exchange === filter);
 
   return (
     <View style={styles.container}>
-      {/* Back Button */}
       <TouchableOpacity onPress={() => router.back()} style={styles.backButton}>
         <Text style={styles.backText}>← Back to Settings</Text>
       </TouchableOpacity>
@@ -38,13 +51,23 @@ export default function NewsScreen() {
         ))}
       </ScrollView>
 
-      <FlatList
-        data={filtered}
-        keyExtractor={item => item.id}
-        renderItem={({ item }) => <NewsCard item={item} />}
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.listContent}
-      />
+      {loading ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Brand.accent} />
+          <Text style={styles.loadingText}>Loading news...</Text>
+        </View>
+      ) : (
+        <FlatList
+          data={filtered}
+          keyExtractor={item => item.id}
+          renderItem={({ item }) => <NewsCard item={item} />}
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.listContent}
+          ListEmptyComponent={
+            <Text style={styles.emptyText}>No news found for this exchange.</Text>
+          }
+        />
+      )}
     </View>
   );
 }
@@ -63,7 +86,7 @@ const styles = StyleSheet.create({
   backText: {
     color: Brand.accent,
     fontSize: 16,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
     fontWeight: '600',
   },
   header: {
@@ -74,12 +97,12 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: '700',
     color: Brand.text,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
   },
   date: {
     fontSize: 14,
     color: Brand.textMuted,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
     marginTop: Spacing.half,
   },
   filterContainer: {
@@ -103,7 +126,7 @@ const styles = StyleSheet.create({
   filterText: {
     color: Brand.textSecondary,
     fontSize: 14,
-    fontFamily: Fonts.default.sans,
+    fontFamily: Fonts.sans,
   },
   filterTextActive: {
     color: Brand.bg,
@@ -112,5 +135,21 @@ const styles = StyleSheet.create({
   listContent: {
     paddingHorizontal: Spacing.four,
     paddingBottom: Spacing.six,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  loadingText: {
+    color: Brand.textSecondary,
+    marginTop: Spacing.two,
+    fontFamily: Fonts.sans,
+  },
+  emptyText: {
+    color: Brand.textMuted,
+    textAlign: 'center',
+    marginTop: Spacing.five,
+    fontFamily: Fonts.sans,
   },
 });
