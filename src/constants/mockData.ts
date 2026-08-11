@@ -33,7 +33,7 @@ function detectSeverity(title: string): 'high' | 'medium' | 'low' {
   return 'low';
 }
 
-// Static fallback news
+// ========== STATIC FALLBACK DATA ==========
 const FALLBACK_NEWS: NewsItem[] = [
   {
     id: '1',
@@ -97,57 +97,65 @@ const FALLBACK_NEWS: NewsItem[] = [
   },
 ];
 
-// ========== NEWS API ==========
+// ========== NEWS API (CoinGecko Only) ==========
 export const fetchRealNews = async (): Promise<{ date: string; news: NewsItem[] }> => {
-  const APIs = [
-    'https://cryptovision-api.vercel.app/news',
-    'https://api.coingecko.com/api/v3/news',
-  ];
-
-  for (const api of APIs) {
-    try {
-      const response = await fetch(api);
-      if (!response.ok) continue;
-      const data = await response.json();
-      
-      const articles = data.articles || data.data || data.news || [];
-      if (articles.length > 0) {
-        return {
-          date: new Date().toISOString(),
-          news: articles.slice(0, 20).map((article: any) => ({
-            id: article.id || String(Math.random()),
-            exchange: extractExchange(article.title || article.headline || ''),
-            headline: article.title || article.headline || 'No title',
-            summary: article.description || article.summary || article.content || '',
-            source: article.source || article.publisher || 'Crypto News',
-            url: article.url || article.link || '#',
-            timestamp: article.published_at || article.publishedAt || new Date().toISOString(),
-            severity: detectSeverity(article.title || article.headline || ''),
-          })),
-        };
-      }
-    } catch (error) {
-      console.warn(`Failed to fetch from ${api}:`, error);
+  try {
+    // CoinGecko News API
+    const response = await fetch('https://api.coingecko.com/api/v3/news');
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
     }
+    
+    const data = await response.json();
+    
+    // CoinGecko returns { data: [...] }
+    const articles = data.data || [];
+    
+    if (articles.length === 0) {
+      throw new Error('No news articles found');
+    }
+    
+    return {
+      date: new Date().toISOString(),
+      news: articles.slice(0, 20).map((article: any) => ({
+        id: article.id || String(Math.random()),
+        exchange: extractExchange(article.title || ''),
+        headline: article.title || 'No title',
+        summary: article.description || article.content || '',
+        source: article.source || 'CoinGecko',
+        url: article.url || '#',
+        timestamp: article.published_at || new Date().toISOString(),
+        severity: detectSeverity(article.title || ''),
+      })),
+    };
+  } catch (error) {
+    console.error('Failed to fetch news from CoinGecko:', error);
+    return {
+      date: new Date().toISOString(),
+      news: FALLBACK_NEWS,
+    };
   }
-
-  return {
-    date: new Date().toISOString(),
-    news: FALLBACK_NEWS,
-  };
 };
 
-// ========== RISK API (CoinGecko - NO BACKEND NEEDED) ==========
+// ========== RISK API (CoinGecko Only) ==========
 export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: RiskItem[] }> => {
   try {
+    // CoinGecko Exchanges API
     const response = await fetch('https://api.coingecko.com/api/v3/exchanges');
-    if (!response.ok) throw new Error('API response not OK');
+    
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    
     const data = await response.json();
     
     const targetExchanges = ['Binance', 'Coinbase', 'Kraken', 'Bybit', 'OKX', 'KuCoin'];
+    
     const risks = data
       .filter((ex: any) => targetExchanges.includes(ex.name))
       .map((ex: any) => {
+        // trust_score is 0-10, convert to risk %
         const trustScore = ex.trust_score || 5;
         const risk = ((10 - trustScore) / 10) * 100;
         return {
@@ -156,16 +164,16 @@ export const fetchRealRisks = async (): Promise<{ timestamp: string; risks: Risk
         };
       });
     
-    if (risks.length > 0) {
-      return {
-        timestamp: new Date().toISOString(),
-        risks: risks,
-      };
+    if (risks.length === 0) {
+      throw new Error('No exchanges matched');
     }
-    throw new Error('No exchanges matched');
     
+    return {
+      timestamp: new Date().toISOString(),
+      risks: risks,
+    };
   } catch (error) {
-    console.error('Failed to fetch risks:', error);
+    console.error('Failed to fetch risks from CoinGecko:', error);
     return {
       timestamp: new Date().toISOString(),
       risks: [
