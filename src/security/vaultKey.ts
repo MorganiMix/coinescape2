@@ -1,14 +1,20 @@
 /**
- * Biometric-gated vault master key.
+ * The vault master key and its optional biometric-gated copy.
  *
- * Radical passwordless model (Requirement 8/9 revisited):
- *  - The AES-256-GCM master key that encrypts all exchange credentials is a
- *    random 256-bit value — NOT derived from a password.
- *  - It is stored in the OS secure store with `requireAuthentication: true`, so
- *    reading it back forces the device's own authentication: Face ID / Touch ID
- *    with an automatic fall-through to the device passcode.
- *  - We refuse to operate on a device with no lock enrolled at all — there would
- *    be nothing protecting the key at rest.
+ * The master key is a random 256-bit AES-256-GCM key that encrypts every stored
+ * exchange credential. It has two homes:
+ *
+ *  1. **`pinVault.ts`** — wrapped under the user's 6-digit PIN, written without
+ *     `requireAuthentication`. This is the authoritative copy and the one that
+ *     survives everything short of an uninstall.
+ *  2. **here** — a verbatim copy in a secure-store item written *with*
+ *     `requireAuthentication: true`, so reading it forces a biometric check.
+ *     Purely a convenience, and explicitly disposable: both platforms destroy
+ *     this item when the enrolled biometrics change, which used to take the
+ *     whole vault with it.
+ *
+ * Nothing in this module should be treated as fatal by callers. `biometricVault.ts`
+ * wraps it in a result type that turns every failure into "use your PIN".
  *
  * The key is only ever held in memory for the session (zeroed on sign-out).
  */
@@ -16,16 +22,15 @@ import * as LocalAuthentication from 'expo-local-authentication';
 import * as SecureStore from 'expo-secure-store';
 import { Platform } from 'react-native';
 
-import { hexToBytes, randomBytes } from './crypto';
-import { bytesToHex } from './crypto';
+import { bytesToHex, hexToBytes, randomBytes } from './crypto';
 
-/** Secure-store key holding the hex-encoded random master key. */
+/** Secure-store key holding the hex-encoded biometric-gated master key copy. */
 const MASTER_KEY_ID = 'coinescape.masterkey.v1';
 
 /** Typed errors so the UI can distinguish "no lock" from "auth failed". */
 export class NoDeviceLockError extends Error {
   constructor() {
-    super('This device has no screen lock. Set up Face ID, Touch ID, or a passcode to use Coin Escape.');
+    super('This device has no screen lock. Set up Face ID, Touch ID, or a passcode to use biometric unlock.');
     this.name = 'NoDeviceLockError';
   }
 }
@@ -33,6 +38,40 @@ export class VaultAuthError extends Error {
   constructor(message = 'Authentication was cancelled or failed.') {
     super(message);
     this.name = 'VaultAuthError';
+  }
+}
+/**
+ * The vault holds no key any authentication can reach.
+ *
+ * Since the PIN wrap landed this means something close to total loss — the PIN
+ * wrap is absent *and* the biometric copy is gone — and the only way forward is
+ * to re-enrol. A merely-invalidated biometric copy is no longer reported this
+ * way; see `BiometricUnlockResult`.
+ */
+export class VaultKeyMissingError extends Error {
+  constructor() {
+    super(
+      'This device’s vault key is no longer available. The saved data can’t be recovered — set up the vault again to continue.'
+    );
+    this.name = 'VaultKeyMissingError';
+  }
+}
+
+/**
+ * Android-only: the device has a lock but no *strong* biometric enrolled, and
+ * expo-secure-store's Android implementation can only gate a key behind
+ * `BIOMETRIC_STRONG` (`AuthenticationHelper.assertBiometricsSupport()` has no
+ * `DEVICE_CREDENTIAL` fallback).
+ *
+ * This no longer blocks anyone from using the app — such a device sets a PIN
+ * like any other — it only means the biometric shortcut can't be offered.
+ */
+export class BiometricsRequiredError extends Error {
+  constructor() {
+    super(
+      'Android requires a fingerprint or face unlock to protect a key with biometrics. A PIN or pattern alone is not enough — enrol a biometric in your device settings to use this shortcut.'
+    );
+    this.name = 'BiometricsRequiredError';
   }
 }
 
@@ -44,105 +83,96 @@ const authProtected: SecureStore.SecureStoreOptions = {
 };
 
 /**
- * Ensure the device has SOME lock we can gate the key behind. On native this
- * means a biometric OR a device passcode is enrolled. Throws
- * {@link NoDeviceLockError} otherwise. On web there is no secure enclave, so we
- * simply allow the in-memory fallback used elsewhere for dev.
+ * Ensure the device can hold a *biometric-gated* key.
+ *
+ * Only the biometric shortcut needs this now. Vault access itself requires
+ * nothing of the device, which is what lets the app run on Android handsets
+ * with a pattern-only lock and on iPhones with a passcode but no Face ID —
+ * both of which the old enrolment flow refused outright.
+ *
+ * @throws {NoDeviceLockError} nothing is enrolled at all.
+ * @throws {BiometricsRequiredError} a lock exists but can't gate a key.
  */
 export async function ensureDeviceLock(): Promise<void> {
   if (Platform.OS === 'web') return;
 
-  // `canUseBiometricAuthentication()` is true when biometrics are ready, but a
-  // device with only a passcode (no biometrics) must still pass. Combine both
-  // signals: hasHardware+enrolled covers biometrics; canUse covers the broader
-  // "secure-store can require auth" case which includes the passcode path.
-  const canUse = SecureStore.canUseBiometricAuthentication();
-  if (canUse) return;
+  if (SecureStore.canUseBiometricAuthentication()) return;
 
-  // No biometrics ready — check whether the OS at least has a passcode by
-  // asking LocalAuthentication for the enrolled security level.
   const level = await LocalAuthentication.getEnrolledLevelAsync();
   if (level === LocalAuthentication.SecurityLevel.NONE) {
     throw new NoDeviceLockError();
   }
-}
-
-/** True once a master key exists in the secure store. */
-export async function hasMasterKey(): Promise<boolean> {
-  if (Platform.OS === 'web') return webMasterKey !== null;
-  // getItemAsync WITHOUT requireAuthentication would still find the item's
-  // presence, but to avoid a stray prompt we read metadata via a plain get.
-  // secure-store has no "exists" API, so a guarded read is the only option; use
-  // the non-auth variant which returns null for an auth-protected item on some
-  // platforms — so instead we track existence separately is overkill. We accept
-  // that hasMasterKey triggers the auth prompt on iOS; callers use it only at
-  // unlock time. Web keeps an in-memory copy.
-  try {
-    const v = await SecureStore.getItemAsync(MASTER_KEY_ID, authProtected);
-    return v !== null;
-  } catch {
-    return true; // an auth-required error still implies the item exists
-  }
+  throw new BiometricsRequiredError();
 }
 
 // Web-only in-memory key so the flow is testable in a browser (no keychain).
 let webMasterKey: Uint8Array | null = null;
 
-/**
- * Create the random master key on first enrolment. Requires a device lock.
- * No-op-safe: if a key already exists it is left untouched.
- */
-export async function createMasterKey(): Promise<Uint8Array> {
-  await ensureDeviceLock();
-  const key = randomBytes(32);
-  if (Platform.OS === 'web') {
-    webMasterKey = key;
-    return key;
-  }
-  await SecureStore.setItemAsync(MASTER_KEY_ID, bytesToHex(key), authProtected);
-  return key;
+/** Mint a fresh random master key. Persists nothing. */
+export function mintMasterKey(): Uint8Array {
+  return randomBytes(32);
 }
 
 /**
- * Read the master key back, forcing device authentication (biometric →
- * passcode). Throws {@link VaultAuthError} if the user cancels/fails and
- * {@link NoDeviceLockError} if the device has no lock.
+ * Read the biometric-gated copy of the master key.
+ *
+ * Returns `null` when no such item exists — which covers both "the user never
+ * enabled biometrics" and "the item was destroyed by a biometric re-enrolment",
+ * because the native modules swallow `KeyPermanentlyInvalidatedException` /
+ * `BadPaddingException` and return null rather than raising. Throws
+ * {@link VaultAuthError} only when the user cancelled or failed the prompt.
+ *
+ * That distinction is load-bearing: a cancelled prompt must never be mistaken
+ * for an absent key, or a caller could mint a replacement over a live one.
  */
-export async function unlockMasterKey(): Promise<Uint8Array> {
-  await ensureDeviceLock();
-  if (Platform.OS === 'web') {
-    if (!webMasterKey) throw new VaultAuthError('No vault on this device.');
-    return webMasterKey;
-  }
+export async function readBiometricCopy(): Promise<Uint8Array | null> {
+  if (Platform.OS === 'web') return webMasterKey;
   let hex: string | null;
   try {
     hex = await SecureStore.getItemAsync(MASTER_KEY_ID, authProtected);
   } catch (e) {
-    // secure-store throws when the user cancels or auth fails.
     throw new VaultAuthError(e instanceof Error ? e.message : undefined);
   }
-  if (!hex) throw new VaultAuthError('No vault on this device.');
-  return hexToBytes(hex);
+  return hex ? hexToBytes(hex) : null;
 }
 
 /**
- * Overwrite the stored master key (used by migration to install the new random
- * key after re-wrapping credentials). Requires a device lock.
+ * Write (or overwrite) the biometric-gated copy of the master key.
+ *
+ * Safe to call repeatedly with the same key — that is exactly how a copy
+ * invalidated by a biometric re-enrolment gets repaired after a PIN unlock.
+ * Requires a device that can gate a key; on Android this shows a prompt,
+ * because the native encryptor authenticates the cipher for writes too.
  */
-export async function writeMasterKey(key: Uint8Array): Promise<void> {
-  await ensureDeviceLock();
+export async function writeBiometricCopy(key: Uint8Array): Promise<void> {
   if (Platform.OS === 'web') {
     webMasterKey = key;
     return;
   }
+  await ensureDeviceLock();
   await SecureStore.setItemAsync(MASTER_KEY_ID, bytesToHex(key), authProtected);
 }
 
-/** Remove the master key entirely (reset flow). */
-export async function deleteMasterKey(): Promise<void> {
+/** Remove the biometric-gated copy. The PIN wrap is untouched. */
+export async function deleteBiometricCopy(): Promise<void> {
   if (Platform.OS === 'web') {
     webMasterKey = null;
     return;
   }
   await SecureStore.deleteItemAsync(MASTER_KEY_ID, authProtected);
+}
+
+/**
+ * Read the biometric copy without prompting-related exceptions escaping.
+ *
+ * Used by the legacy-account migration, which needs to know whether a master
+ * key already exists on the device so it can resume rather than mint a second
+ * one — but must not fall over if the biometric prompt is dismissed.
+ */
+export async function peekExistingMasterKey(): Promise<Uint8Array | null> {
+  try {
+    return await readBiometricCopy();
+  } catch {
+    return null;
+  }
 }

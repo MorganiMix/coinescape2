@@ -4,12 +4,13 @@ import { Alert, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, St
 import QRCode from 'react-native-qrcode-svg';
 
 import { NavMenu } from '@/components/NavMenu';
+import { PinUnlock } from '@/components/PinEntry';
 import { ThemedText } from '@/components/themed-text';
 import { Card } from '@/components/ui/Card';
 import { GradientButton } from '@/components/ui/GradientButton';
 import { Screen } from '@/components/ui/Screen';
 import { TextField } from '@/components/ui/TextField';
-import { Brand, Radius, Spacing } from '@/constants/theme';
+import { Brand, Fonts, Radius, Spacing } from '@/constants/theme';
 import { peekTransferName } from '@/security';
 import { useAppStore } from '@/store/AppStore';
 
@@ -38,10 +39,12 @@ export default function ProfilesScreen() {
   const [createName, setCreateName] = useState('');
   const [creating, setCreating] = useState(false);
 
-  // Export → QR
+  // Export → authorise with the vault PIN, then show the QR + its one-time code
   const [exportOpen, setExportOpen] = useState(false);
-  const [exportPin, setExportPin] = useState('');
   const [exportQr, setExportQr] = useState<string | null>(null);
+  /** The generated code the receiving phone must type. Never the vault PIN. */
+  const [transferCode, setTransferCode] = useState<string | null>(null);
+  const [exportError, setExportError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
   // Import → scan QR, then enter PIN
@@ -49,7 +52,9 @@ export default function ProfilesScreen() {
   const [scanOpen, setScanOpen] = useState(false);
   const [scannedText, setScannedText] = useState<string | null>(null);
   const [scannedName, setScannedName] = useState<string | null>(null);
-  const [importPin, setImportPin] = useState('');
+  /** Transfer-code pad, shown after a successful scan. */
+  const [importOpen, setImportOpen] = useState(false);
+  const [importError, setImportError] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
   // Guard against onBarcodeScanned firing repeatedly for the same frame.
   const scanLock = useRef(false);
@@ -153,31 +158,37 @@ export default function ProfilesScreen() {
   // ---- Export → QR ----
 
   const openExport = () => {
-    setExportPin('');
     setExportQr(null);
+    setTransferCode(null);
+    setExportError(null);
     setExportOpen(true);
   };
 
   const closeExport = () => {
     setExportOpen(false);
-    setExportPin('');
     setExportQr(null);
+    // Drop the code with the screen: it is single-use by design, and leaving it
+    // in memory for a re-open would quietly turn it into a reusable password.
+    setTransferCode(null);
+    setExportError(null);
   };
 
-  const handleGenerateQr = async () => {
-    if (exportPin.length < 4) {
-      Alert.alert('PIN too short', 'Choose a transfer PIN of at least 4 digits.');
-      return;
-    }
+  /**
+   * Authorise the export with the vault PIN. The QR is then encrypted under a
+   * freshly-generated one-time code (returned by the store), not under the PIN —
+   * the QR leaves the device, and the PIN must not.
+   */
+  const handleGenerateQr = async (pin: string) => {
     setExporting(true);
+    setExportError(null);
     try {
-      // Biometric re-auth happens inside exportActiveProfile.
-      const result = await exportActiveProfile(exportPin);
-      if (!result.ok || !result.text) {
-        Alert.alert('Export failed', result.error ?? 'Could not export this profile.');
+      const result = await exportActiveProfile(pin);
+      if (!result.ok || !result.text || !result.code) {
+        setExportError(result.error ?? 'Could not export this profile.');
         return;
       }
       setExportQr(result.text);
+      setTransferCode(result.code);
     } finally {
       setExporting(false);
     }
@@ -199,7 +210,7 @@ export default function ProfilesScreen() {
     scanLock.current = false;
     setScannedText(null);
     setScannedName(null);
-    setImportPin('');
+    setImportError(null);
     setScanOpen(true);
   };
 
@@ -220,11 +231,16 @@ export default function ProfilesScreen() {
     setScanOpen(false);
   };
 
-  const runImport = async (overwriteId?: string) => {
+  /**
+   * @param code passed explicitly rather than read from state — it arrives from
+   *   the PIN pad's submit callback, and a `setState` in the same tick would not
+   *   be visible here yet.
+   */
+  const runImport = async (overwriteId: string | undefined, code: string) => {
     if (!scannedText) return;
     setImporting(true);
     try {
-      const result = await importProfileFromText(scannedText, importPin, overwriteId);
+      const result = await importProfileFromText(scannedText, code, overwriteId);
       if (result.needsSlot) {
         // All slots full — ask which to overwrite.
         Alert.alert(
@@ -233,7 +249,7 @@ export default function ProfilesScreen() {
           [
             ...profiles.map((p) => ({
               text: p.name + (p.id === activeProfileId ? ' (active)' : ''),
-              onPress: () => runImport(p.id),
+              onPress: () => void runImport(p.id, code),
             })),
             { text: 'Cancel', style: 'cancel' as const },
           ]
@@ -241,28 +257,24 @@ export default function ProfilesScreen() {
         return;
       }
       if (!result.ok) {
-        Alert.alert('Import failed', result.error ?? 'Could not import this profile.');
+        // Reopen the pad rather than dumping the user back to the card: a
+        // mistyped digit is by far the likeliest cause.
+        setImportError(result.error ?? 'Could not import this profile.');
+        setImportOpen(true);
         return;
       }
       setScannedText(null);
       setScannedName(null);
-      setImportPin('');
+      setImportError(null);
       Alert.alert('Imported', 'Profile imported and made active.');
     } finally {
       setImporting(false);
     }
   };
 
-  const handleImport = () => {
-    if (!scannedText) {
-      Alert.alert('Nothing to import', 'Scan a profile QR code first.');
-      return;
-    }
-    if (importPin.length < 4) {
-      Alert.alert('PIN required', 'Enter the transfer PIN the QR code was created with.');
-      return;
-    }
-    runImport();
+  const handleImportCode = (code: string) => {
+    setImportOpen(false);
+    void runImport(undefined, code);
   };
 
   return (
@@ -377,9 +389,9 @@ export default function ProfilesScreen() {
         <Card style={styles.group}>
           <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
             Shows “{activeProfile?.name ?? 'the active profile'}” as an encrypted QR code. You set a
-            one-time transfer PIN and confirm with your device — the receiving phone scans the code
-            and enters the same PIN. The PIN is the only thing that can decrypt it, so share it
-            separately.
+            You confirm with your PIN, then the app shows a one-time 6-digit transfer code — the
+            receiving phone scans the QR and enters that code. The code is the only thing that can
+            decrypt it, so read it out separately. Your own PIN never leaves this device.
           </ThemedText>
           <GradientButton
             label="Show transfer QR"
@@ -394,7 +406,7 @@ export default function ProfilesScreen() {
         </ThemedText>
         <Card style={styles.group}>
           <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-            Scan a transfer QR from another phone, then enter the transfer PIN it was created with.
+            Scan a transfer QR from another phone, then enter the 6-digit code shown next to it.
             It imports into a free slot, or asks which profile to overwrite when all {maxProfiles}{' '}
             are in use.
           </ThemedText>
@@ -412,24 +424,15 @@ export default function ProfilesScreen() {
             onPress={openScanner}
           />
           {scannedText && (
-            <>
-              <TextField
-                label="Transfer PIN"
-                placeholder="PIN the QR was created with"
-                secureToggle
-                keyboardType="number-pad"
-                autoCapitalize="none"
-                autoCorrect={false}
-                value={importPin}
-                onChangeText={setImportPin}
-              />
-              <GradientButton
-                label={importing ? 'Decrypting…' : 'Import profile'}
-                variant="accent"
-                disabled={importing}
-                onPress={handleImport}
-              />
-            </>
+            <GradientButton
+              label={importing ? 'Decrypting…' : 'Enter transfer code'}
+              variant="accent"
+              disabled={importing}
+              onPress={() => {
+                setImportError(null);
+                setImportOpen(true);
+              }}
+            />
           )}
         </Card>
       </ScrollView>
@@ -487,15 +490,25 @@ export default function ProfilesScreen() {
           behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
           <Pressable style={StyleSheet.absoluteFill} onPress={closeExport} />
           <View style={styles.modalCard}>
-            <ThemedText style={styles.modalTitle}>Transfer “{activeProfile?.name ?? 'Profile'}”</ThemedText>
-            {exportQr ? (
+            {exportQr && transferCode ? (
               <>
+                <ThemedText style={styles.modalTitle}>
+                  Transfer “{activeProfile?.name ?? 'Profile'}”
+                </ThemedText>
                 <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-                  Scan this on the other phone, then enter the transfer PIN there. The code expires
-                  when you close this screen.
+                  Scan this on the other phone, then type the code below. Both expire when you close
+                  this screen.
                 </ThemedText>
                 <View style={styles.qrWrap}>
                   <QRCode value={exportQr} size={240} backgroundColor="white" />
+                </View>
+                <View style={styles.codeWrap}>
+                  <ThemedText type="small" themeColor="textSecondary">
+                    Transfer code
+                  </ThemedText>
+                  <ThemedText style={styles.codeText}>
+                    {transferCode.replace(/(\d{3})(\d{3})/, '$1 $2')}
+                  </ThemedText>
                 </View>
                 <View style={styles.modalActions}>
                   <Pressable onPress={closeExport} hitSlop={6}>
@@ -505,19 +518,13 @@ export default function ProfilesScreen() {
               </>
             ) : (
               <>
-                <ThemedText type="small" themeColor="textSecondary" style={styles.hint}>
-                  Choose a one-time transfer PIN (share it with the other phone separately). You’ll
-                  confirm with your device before the code appears.
-                </ThemedText>
-                <TextField
-                  label="Transfer PIN"
-                  placeholder="At least 4 digits"
-                  secureToggle
-                  keyboardType="number-pad"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  value={exportPin}
-                  onChangeText={setExportPin}
+                <PinUnlock
+                  title="Confirm it’s you"
+                  subtitle="Enter your PIN to export this profile’s credentials."
+                  busy={exporting}
+                  error={exportError}
+                  onSubmit={handleGenerateQr}
+                  onEditError={() => setExportError(null)}
                 />
                 <View style={styles.modalActions}>
                   <Pressable onPress={closeExport} hitSlop={6} disabled={exporting}>
@@ -525,16 +532,41 @@ export default function ProfilesScreen() {
                       Cancel
                     </ThemedText>
                   </Pressable>
-                  <Pressable onPress={handleGenerateQr} hitSlop={6} disabled={exporting}>
-                    <ThemedText style={{ color: Brand.accent, fontWeight: '700' }}>
-                      {exporting ? 'Preparing…' : 'Show QR'}
-                    </ThemedText>
-                  </Pressable>
                 </View>
               </>
             )}
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Import → transfer-code pad */}
+      <Modal
+        visible={importOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setImportOpen(false)}>
+        <View style={styles.modalBackdrop}>
+          <Pressable style={StyleSheet.absoluteFill} onPress={() => setImportOpen(false)} />
+          <View style={styles.modalCard}>
+            <PinUnlock
+              title="Transfer code"
+              subtitle={`Enter the 6-digit code shown on the other phone${
+                scannedName ? ` for “${scannedName}”` : ''
+              }.`}
+              busy={importing}
+              error={importError}
+              onSubmit={handleImportCode}
+              onEditError={() => setImportError(null)}
+            />
+            <View style={styles.modalActions}>
+              <Pressable onPress={() => setImportOpen(false)} hitSlop={6} disabled={importing}>
+                <ThemedText type="small" themeColor="textSecondary">
+                  Cancel
+                </ThemedText>
+              </Pressable>
+            </View>
+          </View>
+        </View>
       </Modal>
 
       {/* Import → camera scanner modal */}
@@ -647,6 +679,16 @@ const styles = StyleSheet.create({
     gap: Spacing.two,
   },
   modalTitle: { fontSize: 18, fontWeight: '800' },
+  codeWrap: { alignItems: 'center', gap: Spacing.one },
+  // Monospaced-ish and widely spaced: this gets read aloud or copied by eye
+  // onto another phone, so the digits need to be unmistakable.
+  codeText: {
+    fontSize: 32,
+    fontWeight: '800',
+    letterSpacing: 6,
+    color: Brand.accent,
+    fontFamily: Fonts.mono,
+  },
   modalActions: {
     flexDirection: 'row',
     justifyContent: 'flex-end',

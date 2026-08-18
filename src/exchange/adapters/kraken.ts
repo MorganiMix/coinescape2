@@ -26,23 +26,15 @@ import {
   toQuery,
   utf8ToBytes,
 } from '../signing';
+import {
+  isKrakenUsdPairFor,
+  parseKrakenAsset,
+  toAppSymbol,
+  toKrakenAsset,
+  toKrakenUsdPair,
+} from './krakenAssets';
 
 const BASE = 'https://api.kraken.com';
-
-/** Kraken returns assets like XXBT/XETH/ZUSD; map common ones to canonical symbols. */
-const KRAKEN_TO_SYMBOL: Record<string, string> = {
-  XXBT: 'BTC',
-  XBT: 'BTC',
-  XETH: 'ETH',
-  ZUSD: 'USD',
-  USDT: 'USDT',
-  USDC: 'USDC',
-  ADA: 'ADA',
-  DOT: 'DOT',
-  SOL: 'SOL',
-  XRP: 'XRP',
-  XXRP: 'XRP',
-};
 
 export class KrakenAdapter implements ExchangeAdapter {
   readonly id = 'kraken';
@@ -96,10 +88,20 @@ export class KrakenAdapter implements ExchangeAdapter {
     const amounts: Record<string, number> = {};
     for (const [raw, amountStr] of Object.entries(result ?? {})) {
       const amount = parseFloat(amountStr as string);
-      if (amount > 0) {
-        const symbol = KRAKEN_TO_SYMBOL[raw] ?? raw;
-        amounts[symbol] = (amounts[symbol] ?? 0) + amount;
-      }
+      if (!(amount > 0)) continue;
+
+      // Kraken reports legacy-prefixed codes (XXDG, XXMR, ZUSD) and per-product
+      // sub-balances (DOT.S, XBT.M, EUR.HOLD) from the same endpoint.
+      const { symbol, withdrawable } = parseKrakenAsset(raw);
+
+      // Bonded balances are deliberately dropped rather than summed into spot.
+      // DOT unbonds over 28 days and ATOM over 21 — including them would let the
+      // withdrawal engine plan a transfer larger than the account can actually
+      // send, and the failure would only surface mid-panic.
+      if (!withdrawable) continue;
+
+      // `.M` / `.HOLD` sub-balances fold into their spot symbol (XBT.M → BTC).
+      amounts[symbol] = (amounts[symbol] ?? 0) + amount;
     }
 
     const prices = await this.fetchUsdPrices(Object.keys(amounts));
@@ -117,13 +119,12 @@ export class KrakenAdapter implements ExchangeAdapter {
     const stables = new Set(['USDT', 'USDC', 'USD', 'DAI']);
     for (const a of assets) if (stables.has(a)) out[a] = 1;
 
-    // Kraken ticker symbols: BTC->XBTUSD, ETH->ETHUSD, etc.
-    const toPair = (a: string) => `${a === 'BTC' ? 'XBT' : a}USD`;
+    // Pairs are requested by altname (BTC → XBTUSD, DOGE → XDGUSD).
     const needed = assets.filter((a) => !stables.has(a));
     if (needed.length === 0) return out;
 
     try {
-      const pairs = needed.map(toPair).join(',');
+      const pairs = needed.map(toKrakenUsdPair).join(',');
       const res = await fetchWithTimeout(
         `${BASE}/0/public/Ticker?pair=${encodeURIComponent(pairs)}`,
         { method: 'GET' }
@@ -132,11 +133,11 @@ export class KrakenAdapter implements ExchangeAdapter {
       const data = await res.json();
       const result = data?.result ?? {};
       for (const a of needed) {
-        // Kraken returns keys that may be prefixed (e.g. XXBTZUSD); match by suffix.
-        const wanted = toPair(a);
-        const entry = Object.entries(result).find(
-          ([k]) => k === wanted || k.replace(/^X|^Z/, '').includes(a === 'BTC' ? 'XBT' : a)
-        );
+        // Kraken answers with the canonical key, not the altname we asked for
+        // (XMRUSD → XXMRZUSD), so match against every shape it is known to use.
+        // The previous substring match was ambiguous: a DOT lookup would happily
+        // bind to any returned key merely containing "DOT".
+        const entry = Object.entries(result).find(([k]) => isKrakenUsdPairFor(k, a));
         const last = (entry?.[1] as any)?.c?.[0];
         const price = last != null ? parseFloat(last) : NaN;
         if (price > 0) out[a] = price;
@@ -153,7 +154,7 @@ export class KrakenAdapter implements ExchangeAdapter {
       const result = await this.privatePost('/0/private/WithdrawAddresses');
       const list: any[] = Array.isArray(result) ? result : [];
       return list.map((a) => ({
-        asset: KRAKEN_TO_SYMBOL[a?.asset] ?? a?.asset ?? null,
+        asset: a?.asset ? toAppSymbol(String(a.asset).toUpperCase()) : null,
         address: String(a?.address ?? ''),
         // The withdrawal-key name is the label AND the value Kraken withdraws to.
         label: String(a?.key ?? a?.address ?? 'Unnamed'),
@@ -176,7 +177,8 @@ export class KrakenAdapter implements ExchangeAdapter {
         return { ok: false, errorMessage: 'Kraken requires a withdrawal wallet name (key).' };
       }
       const result = await this.privatePost('/0/private/Withdraw', {
-        asset: req.asset === 'BTC' ? 'XBT' : req.asset,
+        // BTC → XBT, DOGE → XDG; everything else is already Kraken's own code.
+        asset: toKrakenAsset(req.asset),
         key,
         amount: req.amount,
       });

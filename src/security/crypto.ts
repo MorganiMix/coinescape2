@@ -37,6 +37,32 @@ export const ARGON2_PARALLELISM = 1;
 export const ARGON2_VERSION = 0x13; // v1.3
 
 /**
+ * Hardened Argon2id cost for the **vault PIN**, which is only 6 digits (10^6
+ * guesses). The PIN-wrapped master key is the primary way into the vault, so it
+ * gets materially more work than the transfer code above: 64 MiB / 3 passes,
+ * which lands around a quarter-second on device — unnoticeable behind an unlock
+ * animation, but it multiplies an offline brute force of the whole keyspace into
+ * something that needs serious sustained hardware, on top of the fact that the
+ * wrap never leaves hardware-backed OS storage.
+ *
+ * These values are persisted with each wrap (see `pinVault.ts`), so they can be
+ * raised later without stranding vaults created under the old cost.
+ */
+export const PIN_ARGON2_MEMORY_KIB = 65_536; // 64 MiB
+export const PIN_ARGON2_PASSES = 3;
+export const PIN_ARGON2_PARALLELISM = 1;
+
+/** Tunable Argon2id cost parameters. */
+export interface Argon2Params {
+  /** Memory cost in KiB. */
+  m: number;
+  /** Iterations / passes. */
+  t: number;
+  /** Parallelism (lanes). */
+  p: number;
+}
+
+/**
  * Native PBKDF2 (react-native-quick-crypto, JSI/C++) when available, else the
  * pure-JS @noble implementation. On device the native path is 10–50x faster,
  * which is what keeps a 600,000-iteration login sub-second instead of ~30–45s
@@ -107,28 +133,35 @@ const nativeArgon2Sync: NativeArgon2Sync | null = (() => {
   }
 })();
 
+const DEFAULT_ARGON2_PARAMS: Argon2Params = {
+  m: ARGON2_MEMORY_KIB,
+  t: ARGON2_PASSES,
+  p: ARGON2_PARALLELISM,
+};
+
 function argon2idRaw(
   password: Uint8Array,
   salt: Uint8Array,
-  tagLength: number
+  tagLength: number,
+  params: Argon2Params = DEFAULT_ARGON2_PARAMS
 ): Uint8Array {
   if (nativeArgon2Sync) {
     const out = nativeArgon2Sync('argon2id', {
       message: password,
       nonce: salt,
-      parallelism: ARGON2_PARALLELISM,
+      parallelism: params.p,
       tagLength,
-      memory: ARGON2_MEMORY_KIB,
-      passes: ARGON2_PASSES,
+      memory: params.m,
+      passes: params.t,
       version: ARGON2_VERSION,
     });
     return Uint8Array.from(out);
   }
   return Uint8Array.from(
     nobleArgon2id(password, salt, {
-      t: ARGON2_PASSES,
-      m: ARGON2_MEMORY_KIB,
-      p: ARGON2_PARALLELISM,
+      t: params.t,
+      m: params.m,
+      p: params.p,
       version: ARGON2_VERSION,
       dkLen: tagLength,
     })
@@ -149,6 +182,26 @@ export function randomBytes(length: number): Uint8Array {
 
 export function newSalt(): Uint8Array {
   return randomBytes(SALT_LEN);
+}
+
+/**
+ * A uniformly-random decimal string of `length` digits, from the platform
+ * CSPRNG. Used for one-time profile-transfer codes.
+ *
+ * Rejection sampling rather than `byte % 10`, which would make 0-5 about 20%
+ * more likely than 6-9 — a small bias, but a needless one in a code that is the
+ * only thing protecting exported credentials.
+ */
+export function randomDigits(length: number): string {
+  let out = '';
+  while (out.length < length) {
+    for (const byte of randomBytes(length * 2)) {
+      if (byte >= 250) continue; // 250..255 would skew the distribution
+      out += byte % 10;
+      if (out.length === length) break;
+    }
+  }
+  return out;
 }
 
 /**
@@ -186,13 +239,34 @@ export function deriveVerifierArgon2id(
 }
 
 /**
- * Derive a 256-bit AES key from a short one-time transfer PIN using Argon2id.
+ * Derive a 256-bit AES key from a short one-time transfer code using Argon2id.
  * Used to encrypt a profile-transfer QR payload — a low-entropy PIN is only
  * safe because the memory-hard KDF + single-use nature make brute force
  * impractical within the transfer window.
  */
 export function deriveTransferKey(pin: string, salt: Uint8Array): Uint8Array {
   return argon2idRaw(utf8ToBytes(pin), salt, KEY_LEN);
+}
+
+/**
+ * Derive the 256-bit key-encryption key that wraps the vault master key from
+ * the user's 6-digit vault PIN, using Argon2id at {@link PIN_ARGON2_MEMORY_KIB}
+ * cost.
+ *
+ * `params` is passed explicitly by the caller from the values recorded in the
+ * stored wrap, so a vault created under one cost keeps opening after the
+ * defaults are raised.
+ */
+export function derivePinKey(
+  pin: string,
+  salt: Uint8Array,
+  params: Argon2Params = {
+    m: PIN_ARGON2_MEMORY_KIB,
+    t: PIN_ARGON2_PASSES,
+    p: PIN_ARGON2_PARALLELISM,
+  }
+): Uint8Array {
+  return argon2idRaw(utf8ToBytes(pin), salt, KEY_LEN, params);
 }
 
 /** Shape of an AES-256-GCM ciphertext, hex-encoded for JSON-safe storage. */

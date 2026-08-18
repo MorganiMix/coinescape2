@@ -46,7 +46,11 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { deleteItem } from './secureStore';
 import { deleteAccount } from './auth';
 import { clearAllocations } from './preferencesStore';
-import { CREDS_INDEX_KEY } from './credentialVault';
+import {
+  CREDS_INDEX_KEY,
+  deleteStoredCredentialRecord,
+  listStoredCredentialExchanges,
+} from './credentialVault';
 import { clearAllProfiles } from './profileStore';
 
 const INSTALL_MARKER_KEY = 'coinescape.install.v1';
@@ -76,9 +80,20 @@ export async function detectFreshInstall(): Promise<boolean> {
  * over from a previous iOS install. Never called in response to an update.
  */
 export async function wipeAllSecureStoreEntries(): Promise<void> {
+  // Read the index BEFORE clearing it, so the per-exchange credential records
+  // themselves are removed too. Dropping only the index left the encrypted
+  // `coinescape.creds.<id>.v1` blobs behind as undecryptable orphans.
+  let credentialIds: string[] = [];
+  try {
+    credentialIds = await listStoredCredentialExchanges();
+  } catch {
+    // Index unreadable — nothing to enumerate; the rest of the wipe continues.
+  }
+
   await Promise.allSettled([
     deleteAccount(),
     clearAllocations(),
+    ...credentialIds.map((id) => deleteStoredCredentialRecord(id)),
     deleteItem(CREDS_INDEX_KEY),
     clearAllProfiles(),
   ]);

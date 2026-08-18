@@ -19,12 +19,34 @@ export {
   deriveKey,
   deriveTransferKey,
   encryptString,
+  randomDigits,
   type EncryptedData,
 } from './crypto';
 export {
+  BiometricsRequiredError,
   NoDeviceLockError,
   VaultAuthError,
+  VaultKeyMissingError,
   ensureDeviceLock,
-  unlockMasterKey,
 } from './vaultKey';
+export {
+  PIN_LENGTH,
+  PinLockedOutError,
+  PinNotSetError,
+  WeakPinError,
+  WrongPinError,
+  changePin,
+  checkPinStrength,
+  getPinLockout,
+  hasPin,
+} from './pinVault';
+export {
+  adoptLegacyBiometricEnrolment,
+  disableBiometric,
+  enableBiometric,
+  getBiometricCapability,
+  isBiometricEnabled,
+  type BiometricCapability,
+  type BiometricUnlockResult,
+} from './biometricVault';
 export { generateTotp, base32Decode } from './totp';

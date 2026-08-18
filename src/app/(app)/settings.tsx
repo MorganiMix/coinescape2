@@ -9,6 +9,7 @@ import { ExchangeSelector } from '@/components/ExchangeSelector';
 import { IpChangeWarning } from '@/components/IpChangeWarning';
 import { NavMenu } from '@/components/NavMenu';
 import { SavedAddressPicker } from '@/components/SavedAddressPicker';
+import { SecuritySettings } from '@/components/SecuritySettings';
 import { setLeaveGuard } from '@/components/navGuard';
 import { ThemedText } from '@/components/themed-text';
 import { Card } from '@/components/ui/Card';
@@ -660,6 +661,8 @@ export default function SettingsScreen() {
             })}
           </View>
         )}
+
+        <SecuritySettings />
 
         {/* Global irreversibility warning */}
         <View style={styles.addrWarn}>

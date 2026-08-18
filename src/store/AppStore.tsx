@@ -32,11 +32,24 @@ import {
   loadAllocations,
   loadRegistry,
   enrollVault,
-  unlockVault,
+  attachPinToVault,
+  unlockVaultWithPin,
+  unlockVaultWithBiometric,
+  needsPinSetup as needsPinSetupCheck,
+  changePin as changePinStore,
+  getPinLockout,
+  enableBiometric,
+  disableBiometric,
+  adoptLegacyBiometricEnrolment,
+  isBiometricEnabled,
+  getBiometricCapability,
+  type BiometricUnlockResult,
   migrateLegacyAccount,
+  abandonUnrecoverableCredentials,
   MAX_PROFILES,
   overwriteProfile,
   parseImport,
+  randomDigits,
   ProfileMeta,
   ProfilePayload,
   ProfileSnapshot,
@@ -47,8 +60,8 @@ import {
   switchProfile as switchProfileStore,
   wipeAllSecureStoreEntries,
 } from '@/security';
-import * as LocalAuthentication from 'expo-local-authentication';
-import { Platform } from 'react-native';
+// Aliased: `AppState` is also the name of this store's own state interface.
+import { AppState as RNAppState } from 'react-native';
 import {
   defaultAllocationTargets,
   initialExchanges,
@@ -74,31 +87,88 @@ import {
 /** 15-minute inactivity auto-logout window (Requirement 9.2), in ms. */
 const SESSION_TIMEOUT_MS = 15 * 60 * 1000;
 
+/**
+ * How long the app may sit in the background before returning requires the PIN
+ * again. Short enough that a phone left on a table re-locks, long enough to
+ * survive the app switch you make to paste a withdrawal address.
+ */
+const BACKGROUND_LOCK_MS = 60 * 1000;
+
+/** Digits in a one-time profile-transfer code. */
+const TRANSFER_CODE_LENGTH = 6;
+
 interface AppState {
-  // Auth (local-only, PASSWORDLESS — device biometrics / passcode)
+  // Auth (local-only — 6-digit PIN, with biometrics as an optional shortcut)
   isAuthenticated: boolean;
   /** Whether the on-device account check has finished (avoids redirect flash). */
   authChecked: boolean;
-  /** True once the biometric vault has been enrolled on this device. */
+  /** True once a vault has been enrolled on this device. */
   hasAccount: boolean;
   /** True when a pre-biometric password account is present and needs migrating. */
   needsMigration: boolean;
   /**
-   * Unlock the vault with device authentication (Face ID / Touch ID → passcode).
-   * Throws NoDeviceLockError / VaultAuthError.
+   * True when a vault exists but has no PIN — an install from a pre-PIN build.
+   * The user unlocks with biometrics once more, then must choose a PIN before
+   * reaching the app, so the vault stops depending on a key the OS can destroy.
    */
-  unlock: () => Promise<void>;
-  /** First-run: enrol the biometric vault, then sign in. Throws NoDeviceLockError. */
-  enroll: () => Promise<void>;
+  needsPinSetup: boolean;
+  /** True once the biometric shortcut is switched on for this vault. */
+  biometricEnabled: boolean;
+  /** True when this device can hold a biometric-gated key at all. */
+  biometricAvailable: boolean;
+  /** What to call it here: "Face ID", "Touch ID", "fingerprint"… */
+  biometricLabel: string;
+  /** Epoch ms until which PIN entry is refused; 0 when not locked out. */
+  pinLockedUntil: number;
+  /**
+   * Unlock with the 6-digit PIN. Throws WrongPinError / PinLockedOutError.
+   * Also silently repairs the biometric copy if a prior attempt found it
+   * destroyed by a biometric re-enrolment.
+   */
+  unlockWithPin: (pin: string) => Promise<void>;
+  /**
+   * Try the biometric shortcut. Never throws — resolves with the reason it
+   * didn't work so the caller can fall back to the PIN pad.
+   */
+  unlockWithBiometrics: () => Promise<BiometricUnlockResult>;
+  /** First-run: create the vault under a new PIN, then sign in. */
+  enroll: (pin: string) => Promise<void>;
+  /** Attach a PIN to a pre-PIN vault that was just unlocked, then sign in. */
+  completePinSetup: (pin: string) => Promise<void>;
+  /** Change the vault PIN. Throws WrongPinError / WeakPinError. */
+  changeVaultPin: (currentPin: string, newPin: string) => Promise<void>;
+  /**
+   * Turn the biometric shortcut on or off. Turning it on requires an unlocked
+   * session (it stores a copy of the live key) and shows a prompt on Android.
+   */
+  setBiometricEnabled: (enabled: boolean) => Promise<{ ok: boolean; error?: string }>;
   /**
    * One-time migration of a legacy password account: re-wraps all credentials
-   * under a new biometric-gated key using the supplied password. Throws on a
-   * wrong password or if no device lock is set.
+   * under a new master key and protects it with the chosen PIN.
    */
-  migrate: (password: string) => Promise<void>;
+  migrate: (password: string, pin: string) => Promise<void>;
+  /**
+   * Recovery for a vault left unreadable by an interrupted pre-fix upgrade:
+   * finish the migration, permanently discarding the credentials that decrypt
+   * under no available key. Requires explicit user confirmation at the call
+   * site. Resolves with the exchange ids that were dropped.
+   */
+  abandonMigration: (password: string, pin: string) => Promise<string[]>;
+  /**
+   * Escape hatch for a device whose vault key is gone (Android invalidates it
+   * when a new fingerprint is enrolled). Wipes everything and returns the app
+   * to first-run enrolment. Destructive — confirm with the user first.
+   */
+  resetVault: () => Promise<void>;
   signOut: () => void;
   /** Reset the inactivity timer; call on user interaction. */
   touchSession: () => void;
+  /**
+   * Verify the PIN of the *current* session without ending it — for actions
+   * that need re-authentication (exporting a profile's decrypted credentials).
+   * Resolves true when the PIN is correct.
+   */
+  verifyPin: (pin: string) => Promise<boolean>;
 
   // Exchanges
   exchanges: Exchange[];
@@ -191,20 +261,27 @@ interface AppState {
   createProfile: (name: string) => Promise<{ ok: boolean; error?: string }>;
   /**
    * Export the ACTIVE profile as an encrypted transfer string (to be rendered
-   * as a QR code), encrypted under a one-time transfer PIN. Requires a fresh
-   * biometric re-auth first. Resolves with { ok, text?, error? }.
+   * as a QR code).
+   *
+   * Re-authenticates with the vault PIN, then encrypts the payload under a
+   * freshly generated one-time transfer code which is returned for display
+   * beside the QR. The vault PIN itself is never used as the payload key: the
+   * QR leaves the device, and a photographed QR encrypted under the login PIN
+   * would put that PIN inside a 10^6 offline search.
+   *
+   * Resolves with { ok, text?, code?, error? }.
    */
   exportActiveProfile: (
     pin: string
-  ) => Promise<{ ok: boolean; text?: string; error?: string }>;
+  ) => Promise<{ ok: boolean; text?: string; code?: string; error?: string }>;
   /**
-   * Import an encrypted profile from a scanned QR string + the transfer PIN it
+   * Import an encrypted profile from a scanned QR string + the transfer code it
    * was exported under. Lands in `overwriteId` if given, else a free slot.
    * Resolves with { ok, needsSlot? (all slots full), error? }.
    */
   importProfileFromText: (
     text: string,
-    pin: string,
+    code: string,
     overwriteId?: string
   ) => Promise<{ ok: boolean; needsSlot?: boolean; error?: string }>;
 
@@ -268,6 +345,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [authChecked, setAuthChecked] = useState(false);
   const [hasAccount, setHasAccount] = useState(false);
   const [needsMigration, setNeedsMigration] = useState(false);
+  const [needsPinSetup, setNeedsPinSetup] = useState(false);
+  const [biometricEnabled, setBiometricEnabledState] = useState(false);
+  const [biometricAvailable, setBiometricAvailable] = useState(false);
+  const [biometricLabel, setBiometricLabel] = useState('Biometrics');
+  const [pinLockedUntil, setPinLockedUntil] = useState(0);
   const [exchanges, setExchanges] = useState<Exchange[]>(initialExchanges);
   // External IP tracking for API-key IP-whitelist warnings.
   const [currentIp, setCurrentIp] = useState<string | null>(null);
@@ -317,6 +399,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const encryptionKeyRef = useRef<Uint8Array | null>(null);
   const inactivityTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   /**
+   * Master key recovered by a pre-PIN install's final biometric unlock, held
+   * only until the user picks a PIN. Not a session key — the user is not
+   * authenticated until `completePinSetup` runs.
+   */
+  const pendingKeyRef = useRef<Uint8Array | null>(null);
+  /**
+   * Set when a biometric unlock found its stored key destroyed (a re-enrolment
+   * or a restore onto another device). The next successful PIN unlock rewrites
+   * it, which is what turns the old permanent lockout into a silent repair. We
+   * only rewrite when we know it's broken: on Android an auth-gated write shows
+   * a prompt, so doing it after every PIN unlock would be its own annoyance.
+   */
+  const biometricNeedsRepair = useRef(false);
+  /**
    * Guards the persist-on-change effect so we don't overwrite saved allocations
    * with the in-memory default before the saved copy has been loaded at login.
    * Set true once hydration (or a deliberate fresh start) has completed.
@@ -337,9 +433,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
         }
         const exists = await hasLocalAccount();
         const legacy = exists ? false : await hasLegacyAccount();
+        const pinPending = exists ? await needsPinSetupCheck() : false;
+        // A vault with no PIN predates PINs entirely, so its master key is in
+        // the biometric slot whether or not the (newer) opt-in flag says so.
+        // Backfill it, or the PIN-setup screen has no way to reach that key.
+        if (pinPending) await adoptLegacyBiometricEnrolment();
+        const [bioOn, capability, lockout] = await Promise.all([
+          isBiometricEnabled(),
+          getBiometricCapability(),
+          getPinLockout(),
+        ]);
         if (!cancelled) {
           setHasAccount(exists);
           setNeedsMigration(legacy);
+          setNeedsPinSetup(pinPending);
+          setBiometricEnabledState(bioOn);
+          setBiometricAvailable(capability.available);
+          setBiometricLabel(capability.label);
+          setPinLockedUntil(lockout.lockedUntil);
         }
       } catch {
         // If the detection itself fails, fall back to the marker check so the
@@ -535,29 +646,195 @@ export function AppProvider({ children }: { children: ReactNode }) {
     [clearInactivityTimer, signOut, restoreSession]
   );
 
-  /** Unlock an existing biometric vault (device auth prompt happens here). */
-  const unlock = useCallback(async () => {
-    const { encryptionKey } = await unlockVault();
-    beginSession(encryptionKey);
-  }, [beginSession]);
+  /**
+   * Unlock with the PIN — the path that always works, whatever the OS has done
+   * to the biometric key since last launch.
+   */
+  const unlockWithPin = useCallback(
+    async (pin: string) => {
+      try {
+        const { encryptionKey } = await unlockVaultWithPin(pin);
+        setPinLockedUntil(0);
+        // Rebuild a biometric copy the OS destroyed, so the shortcut the user
+        // switched on keeps working from the next launch without them ever
+        // being told it broke. Best-effort: a refused prompt just means we try
+        // again next time.
+        if (biometricNeedsRepair.current) {
+          biometricNeedsRepair.current = false;
+          await enableBiometric(encryptionKey).catch(() => {});
+        }
+        beginSession(encryptionKey);
+      } catch (e) {
+        // Keep the countdown in the UI in step with the persisted lockout.
+        const lockout = await getPinLockout().catch(() => null);
+        if (lockout) setPinLockedUntil(lockout.lockedUntil);
+        throw e;
+      }
+    },
+    [beginSession]
+  );
 
-  /** First-run: enrol the biometric vault, then start the session. */
-  const enroll = useCallback(async () => {
-    const { encryptionKey } = await enrollVault();
-    beginSession(encryptionKey);
-  }, [beginSession]);
+  /**
+   * Try the biometric shortcut. Never throws: on any failure the caller simply
+   * leaves the PIN pad on screen.
+   *
+   * A pre-PIN install lands in `needsPinSetup`, so a successful read here parks
+   * the key in `pendingKeyRef` and waits for the user to choose a PIN rather
+   * than starting a session.
+   */
+  const unlockWithBiometrics = useCallback(async (): Promise<BiometricUnlockResult> => {
+    const result = await unlockVaultWithBiometric();
+    if (!result.ok) {
+      if (result.reason === 'invalidated') biometricNeedsRepair.current = true;
+      return result;
+    }
+    if (needsPinSetup) {
+      pendingKeyRef.current = result.masterKey;
+      return result;
+    }
+    beginSession(result.masterKey);
+    return result;
+  }, [beginSession, needsPinSetup]);
 
-  /** One-time migration of a legacy password account to the biometric vault. */
-  const migrate = useCallback(
-    async (password: string) => {
-      const { encryptionKey } = await migrateLegacyAccount(password);
+  /** First-run: create the vault under a new PIN, then start the session. */
+  const enroll = useCallback(
+    async (pin: string) => {
+      const { encryptionKey } = await enrollVault(pin);
       beginSession(encryptionKey);
+    },
+    [beginSession]
+  );
+
+  /**
+   * Give a pre-PIN vault a PIN, using the key its final biometric unlock
+   * recovered. Re-encrypts nothing — the same master key is simply wrapped a
+   * second way, so every stored credential stays exactly as it was.
+   */
+  const completePinSetup = useCallback(
+    async (pin: string) => {
+      const key = pendingKeyRef.current;
+      if (!key) throw new Error('Unlock the vault before choosing a PIN.');
+      await attachPinToVault(pin, key);
+      pendingKeyRef.current = null;
+      setNeedsPinSetup(false);
+      beginSession(key);
+    },
+    [beginSession]
+  );
+
+  /** Change the vault PIN (re-wraps the same master key under a new one). */
+  const changeVaultPin = useCallback(async (currentPin: string, newPin: string) => {
+    await changePinStore(currentPin, newPin);
+    setPinLockedUntil(0);
+  }, []);
+
+  /** Verify the current PIN without disturbing the session. */
+  const verifyPin = useCallback(async (pin: string): Promise<boolean> => {
+    try {
+      const { encryptionKey } = await unlockVaultWithPin(pin);
+      encryptionKey.fill(0);
+      setPinLockedUntil(0);
+      return true;
+    } catch {
+      const lockout = await getPinLockout().catch(() => null);
+      if (lockout) setPinLockedUntil(lockout.lockedUntil);
+      return false;
+    }
+  }, []);
+
+  /** Turn the biometric shortcut on or off for the current vault. */
+  const setBiometricEnabled = useCallback(
+    async (enabled: boolean): Promise<{ ok: boolean; error?: string }> => {
+      if (!enabled) {
+        await disableBiometric();
+        biometricNeedsRepair.current = false;
+        setBiometricEnabledState(false);
+        return { ok: true };
+      }
+      const key = encryptionKeyRef.current;
+      if (!key) return { ok: false, error: 'Session locked — sign in again.' };
+      try {
+        await enableBiometric(key);
+        biometricNeedsRepair.current = false;
+        setBiometricEnabledState(true);
+        return { ok: true };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+    []
+  );
+
+  /** One-time migration of a legacy password account to the PIN vault. */
+  const migrate = useCallback(
+    async (password: string, pin: string) => {
+      const { encryptionKey } = await migrateLegacyAccount(password, pin);
+      setNeedsPinSetup(false);
+      beginSession(encryptionKey);
+    },
+    [beginSession]
+  );
+
+  /**
+   * Wipe the vault so the device can enrol again. Used when the master key has
+   * been invalidated and no amount of re-authenticating will bring it back.
+   */
+  const resetVault = useCallback(async () => {
+    await wipeAllSecureStoreEntries();
+    encryptionKeyRef.current = null;
+    pendingKeyRef.current = null;
+    biometricNeedsRepair.current = false;
+    setIsAuthenticated(false);
+    setNeedsMigration(false);
+    setNeedsPinSetup(false);
+    setBiometricEnabledState(false);
+    setPinLockedUntil(0);
+    setHasAccount(false); // flips the sign-in screen back to "set up"
+  }, []);
+
+  /** Finish a migration by discarding credentials no key can decrypt. */
+  const abandonMigration = useCallback(
+    async (password: string, pin: string) => {
+      const { encryptionKey, discardedExchangeIds } =
+        await abandonUnrecoverableCredentials(password, pin);
+      setNeedsPinSetup(false);
+      beginSession(encryptionKey);
+      return discardedExchangeIds;
     },
     [beginSession]
   );
 
   // Clean up any pending timer on unmount.
   useEffect(() => clearInactivityTimer, [clearInactivityTimer]);
+
+  /**
+   * Re-lock when the app comes back from the background after a spell away.
+   *
+   * The 15-minute inactivity timer alone doesn't cover the case that matters
+   * most: a phone left unattended with the app sitting unlocked in the app
+   * switcher. Timing the absence (rather than locking on every blur) keeps the
+   * quick trip to another app — to copy a withdrawal address, say — friction
+   * free. `signOut()` is all that's needed; `(app)/_layout.tsx` already bounces
+   * an unauthenticated session to the sign-in screen.
+   */
+  useEffect(() => {
+    let leftAt: number | null = null;
+
+    const sub = RNAppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        const away = leftAt === null ? 0 : Date.now() - leftAt;
+        leftAt = null;
+        if (away >= BACKGROUND_LOCK_MS) signOut();
+        return;
+      }
+      // 'background' on both platforms; iOS also emits 'inactive' for transient
+      // interruptions (notification shade, incoming call), which must not start
+      // the clock over and must not be mistaken for a real backgrounding.
+      if (next === 'background' && leftAt === null) leftAt = Date.now();
+    });
+
+    return () => sub.remove();
+  }, [signOut]);
 
   const toggleExchange = useCallback((id: ExchangeId) => {
     setExchanges((prev) =>
@@ -820,22 +1097,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 
   const exportActiveProfile = useCallback(
-    async (pin: string): Promise<{ ok: boolean; text?: string; error?: string }> => {
+    async (
+      pin: string
+    ): Promise<{ ok: boolean; text?: string; code?: string; error?: string }> => {
       const key = encryptionKeyRef.current;
       if (!key) return { ok: false, error: 'Session locked — sign in again.' };
-      // Re-authenticate with biometrics / device passcode before exposing
-      // decrypted credentials in a transferable QR payload.
-      if (Platform.OS !== 'web') {
-        const res = await LocalAuthentication.authenticateAsync({
-          promptMessage: 'Confirm to export this profile',
-        });
-        if (!res.success) {
-          return { ok: false, error: 'Authentication cancelled.' };
-        }
+
+      // Re-authenticate before exposing decrypted credentials in a transferable
+      // payload. The PIN is the vault's own authenticator, so this works even
+      // when biometrics are off or the OS has invalidated them.
+      if (!(await verifyPin(pin))) {
+        return { ok: false, error: 'That PIN is not correct.' };
       }
+
+      // The QR is protected by its own single-use code, not by the vault PIN.
+      const code = randomDigits(TRANSFER_CODE_LENGTH);
       try {
         // Decrypt the active profile's credentials with the live session key,
-        // then re-encrypt the whole payload under the one-time transfer PIN.
+        // then re-encrypt the whole payload under the one-time transfer code.
         const ids = await listStoredCredentialExchanges();
         const creds: Record<string, ApiCredentials> = {};
         for (const id of ids) {
@@ -845,28 +1124,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
         const savedAlloc = (await loadAllocations()) ?? allocations;
         const payload: ProfilePayload = { allocations: savedAlloc, creds };
         const active = profiles.find((p) => p.id === activeProfileId);
-        const text = buildExport(active?.name ?? 'Profile', payload, pin);
-        return { ok: true, text };
+        const text = buildExport(active?.name ?? 'Profile', payload, code);
+        return { ok: true, text, code };
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
     },
-    [allocations, profiles, activeProfileId]
+    [allocations, profiles, activeProfileId, verifyPin]
   );
 
   const importProfileFromText = useCallback(
     async (
       text: string,
-      pin: string,
+      code: string,
       overwriteId?: string
     ): Promise<{ ok: boolean; needsSlot?: boolean; error?: string }> => {
       const key = encryptionKeyRef.current;
       if (!key) return { ok: false, error: 'Session locked — sign in again.' };
 
-      // 1. Decrypt with the one-time transfer PIN the QR was exported under.
+      // 1. Decrypt with the one-time transfer code the QR was exported under.
       let imported: { name: string; payload: ProfilePayload };
       try {
-        imported = parseImport(text.trim(), pin);
+        imported = parseImport(text.trim(), code);
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
@@ -1257,11 +1536,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
     authChecked,
     hasAccount,
     needsMigration,
-    unlock,
+    needsPinSetup,
+    biometricEnabled,
+    biometricAvailable,
+    biometricLabel,
+    pinLockedUntil,
+    unlockWithPin,
+    unlockWithBiometrics,
     enroll,
+    completePinSetup,
+    changeVaultPin,
+    setBiometricEnabled,
     migrate,
+    abandonMigration,
+    resetVault,
     signOut,
     touchSession,
+    verifyPin,
     exchanges,
     toggleExchange,
     connectExchange,

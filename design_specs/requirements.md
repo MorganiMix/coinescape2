@@ -147,13 +147,18 @@ The Crypto Panic Button (Coin Escape) is an emergency withdrawal application tha
 
 #### Acceptance Criteria
 
-1. WHEN the application starts, THE System SHALL require user authentication via password or biometric
+1. WHEN the application starts, THE System SHALL require a 6-digit PIN, entered on an in-app numeric keypad
 2. WHEN a user session is inactive for 15 minutes, THE System SHALL automatically log out the user
 3. WHEN a user presses the Panic_Button, THE System SHALL validate that the user session is active
 4. WHEN a user session is invalid, THE System SHALL require re-authentication before allowing withdrawals
-5. WHERE biometric authentication is available, THE System SHALL support fingerprint or face recognition
-6. WHEN authentication fails, THE System SHALL log the failed attempt
-7. THE System SHALL support strong password requirements for user accounts
+5. WHERE biometric authentication is available, THE System SHALL offer fingerprint or face recognition as an OPTIONAL shortcut to the PIN
+6. THE System SHALL NEVER make biometric authentication the sole means of access, because the OS invalidates biometric-gated keys whenever the enrolled biometric set changes
+7. WHEN a biometric-gated key is found to have been invalidated, THE System SHALL fall back to the PIN and re-create the biometric key after the next successful PIN unlock, without data loss
+8. WHEN a PIN attempt fails, THE System SHALL count it persistently and, after 3 consecutive failures, impose an escalating delay (30s doubling to a 30-minute cap)
+9. THE System SHALL NEVER erase the vault in response to failed PIN attempts
+10. THE System SHALL reject trivially guessable PINs (a single repeated digit, or a straight ascending/descending run) at setup
+11. THE System SHALL require re-entry of the PIN when the app returns to the foreground after 60 seconds or more in the background
+12. THE System SHALL function on any device, including those with no screen lock or no biometric hardware enrolled
 
 ### Requirement 10: Audit Logging
 

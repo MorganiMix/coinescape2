@@ -3,7 +3,7 @@
  *
  * A profile's sensitive payload (exchange API credentials + coin allocations)
  * is encrypted with AES-256-GCM under a key derived (Argon2id) from a one-time
- * transfer PIN the sender sets and communicates to the receiver out-of-band.
+ * transfer code the app generates and the sender reads out to the receiver.
  * The ciphertext is emitted as a single compact string that the sender renders
  * as a QR code and the receiver scans. A wrong PIN fails GCM authentication and
  * the import is rejected.
@@ -68,12 +68,15 @@ export class TransferTooLargeError extends Error {
  * Build the encrypted transfer string for a profile, to be rendered as a QR.
  * @param name    profile display name
  * @param payload plaintext profile data (decrypted credentials + allocations)
- * @param pin     one-time transfer PIN the sender shares with the receiver
+ * @param code    one-time transfer code the sender reads out to the receiver.
+ *                Deliberately NOT the user's vault PIN: this QR leaves the
+ *                device, and a captured one encrypted under the vault PIN would
+ *                put that PIN inside a 10^6 offline search.
  * @throws {@link TransferTooLargeError} if the result won't fit in one QR code.
  */
-export function buildExport(name: string, payload: ProfilePayload, pin: string): string {
+export function buildExport(name: string, payload: ProfilePayload, code: string): string {
   const salt = newSalt();
-  const key = deriveTransferKey(pin, salt);
+  const key = deriveTransferKey(code, salt);
   try {
     const file: ProfileTransferFile = {
       f: FORMAT,
@@ -108,10 +111,10 @@ export function peekTransferName(text: string): string | null {
 }
 
 /**
- * Parse + decrypt a scanned transfer string with the PIN.
- * Throws a user-facing Error on malformed input or a wrong PIN.
+ * Parse + decrypt a scanned transfer string with its one-time transfer code.
+ * Throws a user-facing Error on malformed input or a wrong code.
  */
-export function parseImport(text: string, pin: string): ImportResult {
+export function parseImport(text: string, code: string): ImportResult {
   let file: ProfileTransferFile;
   try {
     file = JSON.parse(text);
@@ -128,11 +131,11 @@ export function parseImport(text: string, pin: string): ImportResult {
     throw new Error('Profile transfer is missing required fields or is corrupted.');
   }
 
-  const key = deriveTransferKey(pin, hexToBytes(file.s));
+  const key = deriveTransferKey(code, hexToBytes(file.s));
   try {
-    // Wrong PIN → GCM auth failure → throws here (or check mismatch below).
+    // Wrong code → GCM auth failure → throws here (or check mismatch below).
     const check = decryptString(file.c, key);
-    if (check !== CHECK_CONSTANT) throw new Error('wrong-pin');
+    if (check !== CHECK_CONSTANT) throw new Error('wrong-code');
     const json = decryptString(file.p, key);
     const payload = JSON.parse(json) as ProfilePayload;
     if (!payload || typeof payload !== 'object' || !payload.creds) {
@@ -142,7 +145,7 @@ export function parseImport(text: string, pin: string): ImportResult {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     if (msg.includes('decrypted but its contents')) throw e;
-    throw new Error('Wrong PIN for this QR code — the API credentials could not be decrypted.');
+    throw new Error('Wrong transfer code for this QR — the API credentials could not be decrypted.');
   } finally {
     key.fill(0);
   }
