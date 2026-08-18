@@ -1,9 +1,19 @@
 // src/app/(app)/backup.tsx
 import React, { useState } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, TextInput, Alert, ActivityIndicator } from 'react-native';
+import {
+  View,
+  Text,
+  StyleSheet,
+  TouchableOpacity,
+  TextInput,
+  Alert,
+  ActivityIndicator,
+  Platform,
+  Share,
+} from 'react-native';
 import { useRouter } from 'expo-router';
+import * as FileSystem from 'expo-file-system';
 import * as DocumentPicker from 'expo-document-picker';
-import * as Sharing from 'expo-sharing';
 import { Brand, Spacing, Fonts, Radius } from '@/constants/theme';
 import { exportBackup, importBackup } from '@/security/backup';
 
@@ -19,7 +29,7 @@ export default function BackupScreen() {
       Alert.alert('Error', 'Password must be at least 8 characters');
       return;
     }
-    
+
     if (password !== confirmPassword) {
       Alert.alert('Error', 'Passwords do not match');
       return;
@@ -27,19 +37,33 @@ export default function BackupScreen() {
 
     setLoading(true);
     try {
-      const vaultJSON = JSON.stringify({ 
-        vault: 'Your vault data goes here' 
+      const vaultJSON = JSON.stringify({
+        vault: 'Your vault data goes here',
+        timestamp: new Date().toISOString(),
       });
-      
+
       const path = await exportBackup(vaultJSON, password);
-      
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(path, {
-          mimeType: 'application/json',
-          dialogTitle: 'Save your backup',
+
+      // Share the file using React Native's Share API
+      if (Platform.OS === 'web') {
+        // Web: download the file
+        const content = await FileSystem.readAsStringAsync(path);
+        const blob = new Blob([content], { type: 'application/json' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = 'coin-escape-backup.backup';
+        a.click();
+        URL.revokeObjectURL(url);
+      } else {
+        // Mobile: share via Share API
+        await Share.share({
+          title: 'Coin Escape Backup',
+          message: 'Your encrypted vault backup is attached.',
+          url: path,
         });
       }
-      
+
       Alert.alert('✅ Backup Created!', 'Your encrypted backup has been saved. Store it safely!');
     } catch (error) {
       Alert.alert('❌ Backup Failed', String(error));
@@ -68,7 +92,7 @@ export default function BackupScreen() {
 
       const fileUri = result.assets[0].uri;
       const decrypted = await importBackup(fileUri, password);
-      
+
       Alert.alert('✅ Vault Restored!', 'Your vault has been restored successfully.');
       router.back();
     } catch (error) {
@@ -86,7 +110,7 @@ export default function BackupScreen() {
 
       <Text style={styles.title}>🔐 Backup Vault</Text>
       <Text style={styles.subtitle}>
-        {mode === 'export' 
+        {mode === 'export'
           ? 'Create an encrypted backup of your vault'
           : 'Restore your vault from a backup file'}
       </Text>
@@ -161,8 +185,8 @@ export default function BackupScreen() {
 
       <View style={styles.footer}>
         <Text style={styles.footerText}>
-          {mode === 'export' 
-            ? '🔐 Your vault is encrypted with AES-256-GCM + PBKDF2. The password is never stored.'
+          {mode === 'export'
+            ? '🔐 Your vault is encrypted. The password is never stored.'
             : '🔄 Your vault remains encrypted on this device until you restore.'}
         </Text>
       </View>
