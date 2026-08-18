@@ -70,20 +70,14 @@ export default function SettingsScreen() {
     refreshCurrentIp,
   } = useAppStore();
   const router = useRouter();
-  // Optional deep-link param from the home page: `?exchange=<id>` opens and
-  // expands that exchange's API configuration directly.
   const { exchange: exchangeParam } = useLocalSearchParams<{ exchange?: string }>();
   const activeProfile = profiles.find((p) => p.id === activeProfileId) ?? null;
 
   const [reconnecting, setReconnecting] = useState<Record<string, boolean>>({});
-  // Which exchange's API-config card is expanded (null = all collapsed).
   const [expandedId, setExpandedId] = useState<string | null>(null);
-  // Which asset's saved-address picker is open (null = closed).
   const [pickerAsset, setPickerAsset] = useState<string | null>(null);
-  // Which asset's chain/network picker is open (null = closed).
   const [chainPickerAsset, setChainPickerAsset] = useState<string | null>(null);
 
-  // Enable smooth expand/collapse on Android.
   useEffect(() => {
     if (
       Platform.OS === 'android' &&
@@ -93,7 +87,6 @@ export default function SettingsScreen() {
     }
   }, []);
 
-  // Re-detect the current external IP on entry so IP-change warnings are fresh.
   useEffect(() => {
     void refreshCurrentIp();
   }, [refreshCurrentIp]);
@@ -103,11 +96,6 @@ export default function SettingsScreen() {
     setExpandedId((cur) => (cur === id ? null : id));
   };
 
-  // React to the deep-link param `?exchange=<id>`. Seeding LOCAL expand state
-  // during render (for a value that changed since the last render) is fine, but
-  // the cross-component side-effects — selecting the exchange in the store and
-  // consuming the nav param — must run after commit, in an effect, to avoid
-  // "update a component while rendering a different component" warnings.
   const [lastExchangeParam, setLastExchangeParam] = useState<string | null>(null);
   if (exchangeParam && exchangeParam !== lastExchangeParam) {
     setLastExchangeParam(exchangeParam);
@@ -118,9 +106,7 @@ export default function SettingsScreen() {
     if (connectedExchanges.some((ex) => ex.id === exchangeParam)) {
       setSelectedExchangeId(exchangeParam);
     }
-    // Consume the param so returning to Settings via the menu doesn't re-expand.
     router.setParams({ exchange: undefined });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [exchangeParam]);
 
   const handleReconnect = async (id: string, name: string) => {
@@ -135,7 +121,6 @@ export default function SettingsScreen() {
         );
         return;
       }
-      // Pull fresh balances now that the link is back up.
       refreshBalances().catch(() => {});
       if (result.canWithdraw === false) {
         Alert.alert(
@@ -150,22 +135,14 @@ export default function SettingsScreen() {
     }
   };
 
-  // ----- Per-exchange emergency coin selection -----
   const selectedExchange = connectedExchanges.find((ex) => ex.id === selectedExchangeId) ?? null;
 
-  // Refresh live balances when the screen mounts / the connected set changes, so
-  // the held-coin list and USD figures are populated.
   useEffect(() => {
     if (connectedExchanges.length > 0) refreshBalances().catch(() => {});
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [connectedExchanges.length]);
 
-  // Coins to offer: the exchange's featured/supported set PLUS every coin with a
-  // non-zero balance on that exchange (so funds in unlisted coins aren't missed).
   const heldAssets = selectedExchangeId ? heldAssetsForExchange(selectedExchangeId) : [];
-  // Stable string key for the held set so memos don't re-run on array identity.
   const heldKey = heldAssets.join(',');
-  // Live balance for the selected exchange (amount per asset), for display + USD.
   const exchangeBalances = selectedExchangeId ? liveBalances[selectedExchangeId] ?? {} : {};
 
   const exchangeAssets = useMemo(() => {
@@ -173,7 +150,6 @@ export default function SettingsScreen() {
       selectedExchange && selectedExchange.supportedAssets.length > 0
         ? selectedExchange.supportedAssets
         : FALLBACK_ASSETS;
-    // Held coins first (these have balances), then the remaining featured coins.
     const seen = new Set<string>();
     const ordered: string[] = [];
     for (const a of [...heldKey.split(',').filter(Boolean), ...featured]) {
@@ -185,7 +161,6 @@ export default function SettingsScreen() {
     return ordered;
   }, [selectedExchange, heldKey]);
 
-  // Number of coins held and their total USD value on the selected exchange.
   const heldSummary = useMemo(() => {
     const held = heldKey.split(',').filter(Boolean);
     let usd = 0;
@@ -198,25 +173,18 @@ export default function SettingsScreen() {
       else usd += v;
     }
     return { count: held.length, usd, priced };
-    // exchangeBalances is keyed by selectedExchangeId; heldKey + that id capture it.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [heldKey, selectedExchangeId, priceUsd]);
 
   const exchangeAllocations = selectedExchangeId
     ? allocationsForExchange(selectedExchangeId)
     : {};
-  // Whether the selected exchange exposes a readable saved-address book. When
-  // false (Coinbase, OKX, KuCoin) the UI prompts for manual address entry.
   const exchangeHasAddressBook = selectedExchange ? hasAddressBook(selectedExchange.id) : false;
-  // Whether the selected exchange exposes a per-asset network/chain list.
   const exchangeHasChainSelection = selectedExchange ? hasChainSelection(selectedExchange.id) : false;
-  // Whether the selected exchange withdraws to a named wallet key (Kraken-style).
   const exchangeHasWalletName = selectedExchange ? hasWalletName(selectedExchange.id) : false;
 
   const openPicker = (asset: string) => {
     if (!selectedExchangeId) return;
     setPickerAsset(asset);
-    // Fetch (or refresh) the address book lazily when the picker opens.
     if (!savedAddresses[selectedExchangeId]) {
       fetchWithdrawAddresses(selectedExchangeId).catch(() => {});
     }
@@ -225,13 +193,11 @@ export default function SettingsScreen() {
   const openChainPicker = (asset: string) => {
     if (!selectedExchangeId) return;
     setChainPickerAsset(asset);
-    // Lazily fetch the available chains for this (exchange, asset) if not cached.
     if (!chainOptions[selectedExchangeId]?.[asset]) {
       fetchChains(selectedExchangeId, asset).catch(() => {});
     }
   };
 
-  /** Human label for the currently-selected chain id, or null for default. */
   const chainLabelFor = (asset: string, networkId?: string): string | null => {
     if (!networkId) return null;
     const opts = selectedExchangeId ? chainOptions[selectedExchangeId]?.[asset] : undefined;
@@ -239,11 +205,6 @@ export default function SettingsScreen() {
     return match?.label ?? networkId;
   };
 
-  /**
-   * Enabled coins across ALL connected exchanges that still lack a recipient,
-   * labelled "EXCHANGE · ASSET". Used to validate a Save — every enabled coin
-   * must have a destination before we persist.
-   */
   const missingRecipientsAll = useMemo(() => {
     const out: string[] = [];
     for (const ex of connectedExchanges) {
@@ -258,15 +219,8 @@ export default function SettingsScreen() {
     return out;
   }, [connectedExchanges, allocations]);
 
-  /**
-   * Validate + persist the coin selection. Saving with NO coins selected is
-   * allowed, but any ENABLED coin must have a recipient — otherwise we block
-   * (returning false) so the caller can keep the user on the page.
-   */
   const saveSettings = useCallback(async (): Promise<boolean> => {
     if (missingRecipientsAll.length > 0) {
-      // Only mention the Kraken wallet-name alternative when a connected
-      // exchange actually withdraws to a named key.
       const anyWalletName = connectedExchanges.some((ex) => hasWalletName(ex.id));
       const recipientKinds = anyWalletName
         ? 'saved address or Kraken wallet name'
@@ -287,9 +241,6 @@ export default function SettingsScreen() {
     }
   };
 
-  // ── Unsaved-changes guard ────────────────────────────────────────────────
-  // Keep the latest dirty/save/revert in a ref so the guard registered once can
-  // always see current values without re-registering on every keystroke.
   const leaveStateRef = useRef({ allocationsDirty, saveSettings, revertAllocations });
   useEffect(() => {
     leaveStateRef.current = { allocationsDirty, saveSettings, revertAllocations };
@@ -298,7 +249,7 @@ export default function SettingsScreen() {
   const promptSaveThen = useCallback((proceed: () => void): boolean => {
     const { allocationsDirty: dirty, saveSettings: save, revertAllocations: revert } =
       leaveStateRef.current;
-    if (!dirty) return false; // nothing to save — let navigation happen
+    if (!dirty) return false;
     Alert.alert(
       'Save your changes?',
       'You have unsaved changes to your emergency coin selection.',
@@ -315,19 +266,16 @@ export default function SettingsScreen() {
         {
           text: 'Save',
           onPress: async () => {
-            // Block leaving if validation fails (missing recipient) — stay put.
             if (await save()) proceed();
           },
         },
       ]
     );
-    return true; // intercepted — we'll navigate ourselves after the choice
+    return true;
   }, []);
 
-  // Register the leave-guard for NavMenu-driven navigation + sign-out.
   useEffect(() => setLeaveGuard(promptSaveThen), [promptSaveThen]);
 
-  /** Run an in-page navigation through the unsaved-changes guard. */
   const guardedNav = useCallback(
     (nav: () => void) => {
       if (!promptSaveThen(nav)) nav();
@@ -335,19 +283,15 @@ export default function SettingsScreen() {
     [promptSaveThen]
   );
 
-  // Android hardware back: intercept the same way.
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
       return promptSaveThen(() => {
-        // On "Don't save"/"Save" we revert/persist, then go home.
         router.replace('/(app)/panic');
       });
     });
     return () => sub.remove();
   }, [promptSaveThen, router]);
 
-  // Safety net: if this screen unmounts while still dirty (e.g. an unguarded
-  // navigation path), discard the unsaved edits so a panic never uses them.
   useEffect(() => {
     return () => {
       if (leaveStateRef.current.allocationsDirty) {
@@ -384,6 +328,24 @@ export default function SettingsScreen() {
             </ThemedText>
           </Pressable>
         )}
+
+        {/* 👇 SETUP GUIDE - KEEP THIS */}
+        <Pressable
+          onPress={() => guardedNav(() => router.replace('/(app)/guide'))}
+          style={({ pressed }) => [styles.profileBar, pressed && { opacity: 0.7 }]}>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
+            📘 Setup Guide
+          </ThemedText>
+        </Pressable>
+
+        {/* 👇 NEW: BACKUP VAULT - ADDED HERE */}
+        <Pressable
+          onPress={() => guardedNav(() => router.push('/backup'))}
+          style={({ pressed }) => [styles.profileBar, pressed && { opacity: 0.7 }]}>
+          <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
+            🔐 Backup Vault
+          </ThemedText>
+        </Pressable>
 
         {/* Exchange API config */}
         <ThemedText type="small" themeColor="textSecondary" style={styles.sectionLabel}>
@@ -443,8 +405,6 @@ export default function SettingsScreen() {
                     </Pressable>
                   </View>
                   <IpChangeWarning id={ex.id} name={ex.name} />
-                  {/* Recovery: the exchange dropped the link (key marked ERROR).
-                      Reconnect re-validates the stored credentials — no re-entry. */}
                   {ex.connectionStatus === ConnectionStatus.ERROR && (
                     <>
                       <View style={styles.reconnectNotice}>
@@ -486,7 +446,6 @@ export default function SettingsScreen() {
                     name={ex.name}
                     onConnected={(id) => {
                       setSelectedExchangeId(id);
-                      // Warm the address book for exchanges that expose one.
                       if (hasAddressBook(id)) fetchWithdrawAddresses(id).catch(() => {});
                     }}
                   />
@@ -522,7 +481,7 @@ export default function SettingsScreen() {
           enabledCountFor={enabledCountForExchange}
         />
 
-        {/* Held-balance summary: coins detected + their total USD (CoinGecko). */}
+        {/* Held-balance summary */}
         {selectedExchange && heldSummary.count > 0 && (
           <View style={styles.heldSummary}>
             <ThemedText type="small" themeColor="textSecondary" style={styles.flex}>
@@ -578,9 +537,6 @@ export default function SettingsScreen() {
 
                   {enabled && (
                     <View style={styles.destControls}>
-                      {/* Saved-address picker — only when the exchange exposes a
-                          readable address-book API. Otherwise tell the user to
-                          enter the (already-whitelisted) address manually. */}
                       {exchangeHasAddressBook ? (
                         <>
                           <Pressable
@@ -633,7 +589,6 @@ export default function SettingsScreen() {
                           onChangeText={(t) => updateAllocation(selectedExchange.id, asset, { krakenKey: t })}
                         />
                       )}
-                      {/* Network/chain selector — only for chain-capable exchanges. */}
                       {exchangeHasChainSelection && (
                         <Pressable
                           onPress={() => openChainPicker(asset)}
@@ -720,8 +675,6 @@ export default function SettingsScreen() {
           }
           onPick={(id) => {
             if (chainPickerAsset) {
-              // Empty id clears the override (store undefined, not '') so the
-              // engine/adapters treat it as "no chain" → exchange default.
               updateAllocation(selectedExchange.id, chainPickerAsset, {
                 network: id || undefined,
               });
