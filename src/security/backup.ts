@@ -1,5 +1,5 @@
 // src/security/backup.ts
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 
 /**
  * Simple XOR encryption/decryption for React Native
@@ -42,19 +42,16 @@ export async function encryptVault(
   iterations: number;
   version: string;
 }> {
-  // Generate random salt (16 bytes)
   const salt = new Uint8Array(16);
   for (let i = 0; i < 16; i++) {
     salt[i] = Math.floor(Math.random() * 256);
   }
 
-  // Generate random IV (12 bytes)
   const iv = new Uint8Array(12);
   for (let i = 0; i < 12; i++) {
     iv[i] = Math.floor(Math.random() * 256);
   }
 
-  // Encrypt using XOR
   const encrypted = xorEncrypt(vaultData, password);
 
   return {
@@ -97,7 +94,6 @@ export async function exportBackup(
   const backup = await encryptVault(vaultData, password);
   const json = JSON.stringify(backup, null, 2);
 
-  // Use the NEW FileSystem API (non-deprecated)
   const path = `${FileSystem.documentDirectory}${filename}`;
   await FileSystem.writeAsStringAsync(path, json);
 
@@ -108,7 +104,6 @@ export async function exportBackup(
  * Import backup from a file
  */
 export async function importBackup(filePath: string, password: string): Promise<string> {
-  // Use the NEW FileSystem API (non-deprecated)
   const json = await FileSystem.readAsStringAsync(filePath);
   const backup = JSON.parse(json);
 
