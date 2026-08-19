@@ -12,7 +12,7 @@ import {
   Share,
 } from 'react-native';
 import { useRouter } from 'expo-router';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
 import { Brand, Spacing, Fonts, Radius } from '@/constants/theme';
 import { exportBackup, importBackup } from '@/security/backup';
@@ -44,7 +44,6 @@ export default function BackupScreen() {
 
       const path = await exportBackup(vaultJSON, password);
 
-      // Share the file
       if (Platform.OS === 'web') {
         const content = await FileSystem.readAsStringAsync(path);
         const blob = new Blob([content], { type: 'application/json' });
