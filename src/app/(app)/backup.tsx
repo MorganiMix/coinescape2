@@ -44,9 +44,8 @@ export default function BackupScreen() {
 
       const path = await exportBackup(vaultJSON, password);
 
-      // Share the file using React Native's Share API
+      // Share the file
       if (Platform.OS === 'web') {
-        // Web: download the file
         const content = await FileSystem.readAsStringAsync(path);
         const blob = new Blob([content], { type: 'application/json' });
         const url = URL.createObjectURL(blob);
@@ -56,7 +55,6 @@ export default function BackupScreen() {
         a.click();
         URL.revokeObjectURL(url);
       } else {
-        // Mobile: share via Share API
         await Share.share({
           title: 'Coin Escape Backup',
           message: 'Your encrypted vault backup is attached.',
