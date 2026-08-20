@@ -14,6 +14,7 @@ import {
 import { useRouter } from 'expo-router';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as DocumentPicker from 'expo-document-picker';
+import * as Sharing from 'expo-sharing';
 import { Brand, Spacing, Fonts, Radius } from '@/constants/theme';
 import { exportBackup, importBackup } from '@/security/backup';
 
@@ -43,17 +44,28 @@ export default function BackupScreen() {
       });
 
       const path = await exportBackup(vaultJSON, password);
+      const filename = 'coin-escape-backup.backup';
 
-      if (Platform.OS === 'web') {
-        const content = await FileSystem.readAsStringAsync(path);
-        const blob = new Blob([content], { type: 'application/json' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'coin-escape-backup.backup';
-        a.click();
-        URL.revokeObjectURL(url);
+      // Android: Use Sharing API (works better)
+      if (Platform.OS === 'android') {
+        // Check if sharing is available
+        const isAvailable = await Sharing.isAvailableAsync();
+        if (isAvailable) {
+          await Sharing.shareAsync(path, {
+            mimeType: 'application/json',
+            dialogTitle: 'Save Backup',
+            UTI: 'public.json',
+          });
+        } else {
+          // Fallback: Share API
+          await Share.share({
+            title: 'Coin Escape Backup',
+            message: 'Your encrypted vault backup is attached.',
+            url: path,
+          });
+        }
       } else {
+        // iOS: Use Share API
         await Share.share({
           title: 'Coin Escape Backup',
           message: 'Your encrypted vault backup is attached.',
@@ -62,8 +74,9 @@ export default function BackupScreen() {
       }
 
       Alert.alert('✅ Backup Created!', 'Your encrypted backup has been saved. Store it safely!');
-    } catch (error) {
-      Alert.alert('❌ Backup Failed', String(error));
+    } catch (error: any) {
+      console.error('Export error:', error);
+      Alert.alert('❌ Backup Failed', error?.message || 'Unknown error occurred');
     } finally {
       setLoading(false);
     }
@@ -77,8 +90,11 @@ export default function BackupScreen() {
 
     setLoading(true);
     try {
+      // Android: Accept .backup files
       const result = await DocumentPicker.getDocumentAsync({
-        type: 'application/json',
+        type: Platform.OS === 'android' 
+          ? ['application/json', 'application/octet-stream', '*/*']
+          : ['public.json', 'public.data'],
         copyToCacheDirectory: true,
       });
 
@@ -88,11 +104,21 @@ export default function BackupScreen() {
       }
 
       const fileUri = result.assets[0].uri;
-      const decrypted = await importBackup(fileUri, password);
+      const fileName = result.assets[0].name || '';
+      
+      // Check if it's a .backup file
+      if (!fileName.endsWith('.backup') && !fileName.endsWith('.json')) {
+        Alert.alert('⚠️ Invalid File', 'Please select a .backup file');
+        setLoading(false);
+        return;
+      }
 
+      const decrypted = await importBackup(fileUri, password);
+      
       Alert.alert('✅ Vault Restored!', 'Your vault has been restored successfully.');
       router.back();
-    } catch (error) {
+    } catch (error: any) {
+      console.error('Import error:', error);
       Alert.alert('❌ Restore Failed', 'Invalid password or corrupted backup file.');
     } finally {
       setLoading(false);
